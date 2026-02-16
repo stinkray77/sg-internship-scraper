@@ -34,6 +34,7 @@ def init_db():
     conn.close()
 
 def send_telegram_alert(job):
+    # Ensure this handles the dictionary format we pass to it
     site = job.get('site', 'Unknown')
     title = job.get('title', 'No Title')
     company = job.get('company', 'No Company')
@@ -48,7 +49,15 @@ def send_telegram_alert(job):
     
     tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}
-    requests.post(tg_url, json=payload)
+    
+    # --- NEW DEBUGGING LOGIC ---
+    response = requests.post(tg_url, json=payload)
+    if response.status_code != 200:
+        print(f"❌ TELEGRAM API ERROR: {response.status_code}")
+        print(f"❌ REASON: {response.text}")
+    else:
+        print("✅ Message successfully sent to Telegram!")
+    # ---------------------------
 
 def is_target_role(title: str) -> bool:
     """
@@ -83,7 +92,7 @@ def run_pipeline():
         "job_url": "https://github.com"
     })
     # ---------------------------
-    
+
     # 1. Make ONE broad request using Boolean logic
     broad_search = "(software OR developer OR data OR quant OR AI OR machine learning OR engineer) AND intern"
     
