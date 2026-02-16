@@ -75,6 +75,15 @@ def is_target_role(title: str) -> bool:
 def run_pipeline():
     print("🚀 Running Broad Catch-All Pipeline for SG...")
     
+    # --- ADD THIS QUICK TEST ---
+    send_telegram_alert({
+        "site": "System",
+        "title": "Cloud Pipeline Woke Up",
+        "company": "GitHub Actions",
+        "job_url": "https://github.com"
+    })
+    # ---------------------------
+    
     # 1. Make ONE broad request using Boolean logic
     broad_search = "(software OR developer OR data OR quant OR AI OR machine learning OR engineer) AND intern"
     
