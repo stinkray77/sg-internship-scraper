@@ -1,7 +1,13 @@
 import os
+import time
 import requests
 import psycopg2
+import pandas as pd
 from jobspy import scrape_jobs
+from dotenv import load_dotenv
+
+# LOAD FIRST
+load_dotenv()
 
 # --- CONFIGURATION ---
 DB_URL = os.environ.get("DATABASE_URL")
