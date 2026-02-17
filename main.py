@@ -5,6 +5,7 @@ import psycopg2
 import pandas as pd
 from jobspy import scrape_jobs
 from dotenv import load_dotenv
+from bs4 import BeautifulSoup
 
 # LOAD FIRST
 load_dotenv()
@@ -146,6 +147,77 @@ def run_pipeline():
         cur.close()
         conn.close()
 
+def scrape_internsg_pipeline():
+    print("🚀 Running InternSG Pipeline...")
+    
+    # We target the IT category specifically to reduce initial noise
+    target_url = "https://www.internsg.com/jobs/?f_0=1&f_p=107&f_i=61&filter_s="
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    try:
+        response = requests.get(target_url, headers=headers)
+        if response.status_code != 200:
+            print(f"❌ InternSG Error: {response.status_code}")
+            return
+            
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Find all anchor tags that link to a specific job post
+        job_links = soup.find_all('a', href=True)
+        
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        for link in job_links:
+            url = link['href']
+            title = link.get_text(strip=True)
+            
+            # 1. Basic validation: Is it actually a job link?
+            if '/job/' in url and len(title) > 5:
+                
+                # 2. Pass it through your existing filter!
+                if not is_target_role(title):
+                    continue
+                
+                # Create a unique ID from the URL (e.g., extracts 'software-engineer-intern')
+                raw_id = url.strip('/').split('/')[-1]
+                unique_id = f"internsg_{raw_id}"
+                
+                cur.execute("SELECT job_id FROM seen_jobs WHERE job_id = %s", (unique_id,))
+                if cur.fetchone() is None:
+                    print(f"✨ New InternSG Alert: {title}")
+                    
+                    # Package it for your existing Telegram function
+                    job_data = {
+                        "site": "InternSG",
+                        "title": title,
+                        "company": "View Listing for Details", # InternSG HTML makes company hard to cleanly extract without complex selectors
+                        "job_url": url
+                    }
+                    send_telegram_alert(job_data)
+                    
+                    cur.execute(
+                        "INSERT INTO seen_jobs (job_id, company, title, site) VALUES (%s, %s, %s, %s)",
+                        (unique_id, "InternSG", title, "internsg")
+                    )
+                    conn.commit()
+                    
+    except Exception as e:
+        print(f"❌ InternSG Pipeline Error: {e}")
+    finally:
+        # Check if cur and conn exist before closing in case the error happened before they were defined
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
+
 if __name__ == "__main__":
     init_db()
+    
+    # Run the broad JobSpy scraper first
     run_pipeline()
+    
+    # Run the targeted InternSG scraper second
+    scrape_internsg_pipeline()
+    
+    print("✅ All data pipelines complete.")
