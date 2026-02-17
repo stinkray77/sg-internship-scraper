@@ -213,4 +213,11 @@ def scrape_internsg_pipeline():
 
 if __name__ == "__main__":
     init_db()
+    
+    # Run the broad JobSpy scraper first
     run_pipeline()
+    
+    # Run the targeted InternSG scraper second
+    scrape_internsg_pipeline()
+    
+    print("✅ All data pipelines complete.")
