@@ -80,7 +80,13 @@ def is_target_role(title: str) -> bool:
         "quant", "trading", "trader", "algorithmic", "researcher", 
         "data", "ai", "machine learning", "ml", "backend", "frontend", "fullstack"
     ]
-    return any(good_word in title_lower for good_word in whitelist)
+
+    has_target = any(good_word in title_lower for good_word in whitelist)
+
+    # check for intern
+    is_intern = "intern" in title_lower or "internship" in title_lower
+
+    return has_target and is_intern
 
 def run_pipeline():
     print("🚀 Running Broad Catch-All Pipeline for SG...")
@@ -218,14 +224,10 @@ def scrape_greenhouse_pipeline():
     greenhouse_tokens = [
     "stripe",                 # Stripe
     "optiver",                # Optiver
-    "hudsonrivertrading",     # Hudson River Trading (HRT)
     "towerresearchcapital",   # Tower Research Capital
-    "citadel",                # Citadel
-    "citadelsecurities",      # Citadel Securities
     "coinbase",               # Coinbase
     "motional",               # Motional
     "twilio",                 # Twilio
-    "zendesk"                 # Zendesk
 ]
     
     conn = get_db_connection()
