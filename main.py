@@ -1,5 +1,5 @@
 import os
-import time
+import datetime
 import requests
 import re
 import psycopg2
@@ -41,11 +41,13 @@ def send_telegram_alert(job):
     title = job.get('title', 'No Title')
     company = job.get('company', 'No Company')
     url = job.get('job_url', '#')
+    date_posted = job.get('date_posted', 'Recent')
     
     msg = (
-        f"🇸🇬 **NEW INTERNSHIP ({site})**\n\n"
+        f"🇸🇬 **Internship ({site})**\n\n"
         f"🏢 **{company}**\n"
         f"👨‍💻 {title}\n"
+        f"📅 **Posted:** {date_posted}\n"
         f"🔗 [Apply Here]({url})"
     )
     
