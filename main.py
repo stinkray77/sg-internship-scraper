@@ -1,6 +1,7 @@
 import os
 import time
 import requests
+import re
 import psycopg2
 import pandas as pd
 from jobspy import scrape_jobs
@@ -67,25 +68,22 @@ def is_target_role(title: str) -> bool:
     """
     title_lower = title.lower()
     
-    # 1. Reject conditions (The "Blacklist")
-    # If any of these words are in the title, kill it immediately.
-    blacklist = ["sales", "marketing", "hr", "human resources", "accounting", "civil", "mechanical", "electrical"]
-    if any(bad_word in title_lower for bad_word in blacklist):
+    # 1. The Blacklist (Using Regex to block strict words)
+    # Added "retail" and "design" to catch more noise
+    blacklist_pattern = r"\b(sales|marketing|hr|human resources|accounting|civil|mechanical|electrical|retail|design)\b"
+    if re.search(blacklist_pattern, title_lower):
         return False
         
-    # 2. Accept conditions (The "Whitelist")
-    # If the title passed the blacklist, check if it has a tech/quant keyword.
-    whitelist = [
-        "software", "swe", "developer", "programmer", 
-        "quant", "trading", "trader", "algorithmic", "researcher", 
-        "data", "ai", "machine learning", "ml", "backend", "frontend", "fullstack"
-    ]
-
-    has_target = any(good_word in title_lower for good_word in whitelist)
-
-    # check for intern
-    is_intern = "intern" in title_lower or "internship" in title_lower
-
+    # 2. The Whitelist (Role Type)
+    # \b ensures "ai" only matches the exact word/acronym, not "retail"
+    whitelist_pattern = r"\b(software|swe|developer|programmer|quant|trading|trader|algorithmic|researcher|data|ai|machine learning|ml|backend|frontend|fullstack)\b"
+    has_target = bool(re.search(whitelist_pattern, title_lower))
+    
+    # 3. The Strict Intern Check
+    # Ensures it doesn't accidentally match "international"
+    intern_pattern = r"\b(intern|internship)\b"
+    is_intern = bool(re.search(intern_pattern, title_lower))
+    
     return has_target and is_intern
 
 def run_pipeline():
@@ -403,7 +401,7 @@ def scrape_smartrecruiters_pipeline():
             
     if 'cur' in locals(): cur.close()
     if 'conn' in locals(): conn.close()
-    
+
 if __name__ == "__main__":
     init_db()
     
