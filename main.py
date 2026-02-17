@@ -211,13 +211,80 @@ def scrape_internsg_pipeline():
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
+def scrape_greenhouse_pipeline():
+    print("🚀 Running Greenhouse ATS Pipeline...")
+    
+    # You just maintain a hardcoded list of company board tokens
+    greenhouse_tokens = [
+    "stripe",                 # Stripe
+    "optiver",                # Optiver
+    "hudsonrivertrading",     # Hudson River Trading (HRT)
+    "towerresearchcapital",   # Tower Research Capital
+    "citadel",                # Citadel
+    "citadelsecurities",      # Citadel Securities
+    "coinbase",               # Coinbase
+    "motional",               # Motional
+    "twilio",                 # Twilio
+    "zendesk"                 # Zendesk
+]
+    
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    for token in greenhouse_tokens:
+        url = f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs"
+        
+        try:
+            response = requests.get(url)
+            # If a token is wrong or the company doesn't use Greenhouse, skip it quietly
+            if response.status_code != 200:
+                print(f"⚠️ Could not fetch data for {token}. Check if the token is correct.")
+                continue
+                
+            jobs_data = response.json().get("jobs", [])
+            
+            for job in jobs_data:
+                title = job.get("title", "")
+                
+                # 1. Pass the job through your existing filter!
+                if not is_target_role(title):
+                    continue
+                
+                # Greenhouse provides the direct apply URL and a unique internal ID natively
+                job_url = job.get("absolute_url")
+                raw_id = str(job.get("id"))
+                unique_id = f"greenhouse_{raw_id}"
+                
+                # 2. Database Deduplication
+                cur.execute("SELECT job_id FROM seen_jobs WHERE job_id = %s", (unique_id,))
+                if cur.fetchone() is None:
+                    print(f"✨ New High-Speed Alert: {title} at {token.capitalize()}")
+                    
+                    job_data = {
+                        "site": "Greenhouse API",
+                        "title": title,
+                        "company": token.capitalize(),
+                        "job_url": job_url
+                    }
+                    send_telegram_alert(job_data)
+                    
+                    cur.execute(
+                        "INSERT INTO seen_jobs (job_id, company, title, site) VALUES (%s, %s, %s, %s)",
+                        (unique_id, token.capitalize(), title, "greenhouse")
+                    )
+                    conn.commit()
+                    
+        except Exception as e:
+            print(f"❌ Error scraping Greenhouse for {token}: {e}")
+            
+    if 'cur' in locals(): cur.close()
+    if 'conn' in locals(): conn.close()
+
 if __name__ == "__main__":
     init_db()
     
-    # Run the broad JobSpy scraper first
-    run_pipeline()
-    
-    # Run the targeted InternSG scraper second
-    scrape_internsg_pipeline()
+    run_pipeline()              # Engine 1: Broad JobSpy (LinkedIn/Indeed)
+    scrape_internsg_pipeline()  # Engine 2: InternSG HTML 
+    scrape_greenhouse_pipeline()# Engine 3: Target Company JSON APIs
     
     print("✅ All data pipelines complete.")
