@@ -49,17 +49,26 @@ def send_telegram_alert(job):
         f"🔗 [Apply Here]({url})"
     )
     
-    tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}
+    # Check if credentials exist before trying to send
+    import os
+    bot_token = os.getenv("TELEGRAM_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
     
-    # # --- NEW DEBUGGING LOGIC ---
-    # response = requests.post(tg_url, json=payload)
-    # if response.status_code != 200:
-    #     print(f"❌ TELEGRAM API ERROR: {response.status_code}")
-    #     print(f"❌ REASON: {response.text}")
-    # else:
-    #     print("✅ Message successfully sent to Telegram!")
-    # ---------------------------
+    if not bot_token or not chat_id:
+        print("❌ CRITICAL: Telegram credentials not found in environment variables.")
+        return
+
+    tg_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}
+    
+    try:
+        response = requests.post(tg_url, json=payload)
+        if response.status_code != 200:
+            print(f"❌ TELEGRAM API ERROR: {response.status_code} - {response.text}")
+        else:
+            print("✅ Message successfully sent to Telegram!")
+    except Exception as e:
+        print(f"❌ TELEGRAM CONNECTION FAILED: {e}")
 
 def is_target_role(title: str) -> bool:
     """
