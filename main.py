@@ -282,11 +282,76 @@ def scrape_greenhouse_pipeline():
     if 'cur' in locals(): cur.close()
     if 'conn' in locals(): conn.close()
 
+def scrape_lever_pipeline():
+    print("🚀 Running Lever ATS Pipeline...")
+    
+    # Verified Lever tokens from your target list
+    lever_tokens = [
+        "grab",
+        "carousell",
+        "shopback",
+        "ninjavan"
+    ]
+    
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    for token in lever_tokens:
+        # Lever API endpoint (we explicitly ask for JSON format)
+        url = f"https://api.lever.co/v0/postings/{token}?mode=json"
+        
+        try:
+            response = requests.get(url)
+            if response.status_code != 200:
+                print(f"⚠️ Could not fetch data for Lever token: {token}")
+                continue
+                
+            jobs_data = response.json()
+            
+            # Lever returns a direct list of job objects, unlike Greenhouse which wraps it in a "jobs" key
+            for job in jobs_data:
+                title = job.get("text", "") # Lever uses 'text' for the job title
+                
+                # 1. Pass the job through your strict intern filter!
+                if not is_target_role(title):
+                    continue
+                
+                # 2. Extract specific Lever data points
+                job_url = job.get("hostedUrl")
+                raw_id = str(job.get("id"))
+                unique_id = f"lever_{raw_id}"
+                
+                # 3. Database Deduplication
+                cur.execute("SELECT job_id FROM seen_jobs WHERE job_id = %s", (unique_id,))
+                if cur.fetchone() is None:
+                    print(f"✨ New High-Speed Alert: {title} at {token.capitalize()}")
+                    
+                    job_data = {
+                        "site": "Lever API",
+                        "title": title,
+                        "company": token.capitalize(),
+                        "job_url": job_url
+                    }
+                    send_telegram_alert(job_data)
+                    
+                    cur.execute(
+                        "INSERT INTO seen_jobs (job_id, company, title, site) VALUES (%s, %s, %s, %s)",
+                        (unique_id, token.capitalize(), title, "lever")
+                    )
+                    conn.commit()
+                    
+        except Exception as e:
+            print(f"❌ Error scraping Lever for {token}: {e}")
+            
+    if 'cur' in locals(): cur.close()
+    if 'conn' in locals(): conn.close()
+
 if __name__ == "__main__":
     init_db()
     
-    run_pipeline()              # Engine 1: Broad JobSpy (LinkedIn/Indeed)
-    scrape_internsg_pipeline()  # Engine 2: InternSG HTML 
-    scrape_greenhouse_pipeline()# Engine 3: Target Company JSON APIs
+    run_pipeline()               # Engine 1: Broad JobSpy (LinkedIn/Indeed)
+    scrape_internsg_pipeline()   # Engine 2: InternSG HTML 
+    scrape_greenhouse_pipeline() # Engine 3: Target Company JSON APIs (Quant/US Tech)
+    scrape_lever_pipeline()      # Engine 4: Target Company JSON APIs (SEA Tech)
     
     print("✅ All data pipelines complete.")
