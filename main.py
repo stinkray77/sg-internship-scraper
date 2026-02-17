@@ -287,10 +287,7 @@ def scrape_lever_pipeline():
     
     # Verified Lever tokens from your target list
     lever_tokens = [
-        "grab",
-        "carousell",
-        "shopback",
-        "ninjavan"
+        "shopback-2",
     ]
     
     conn = get_db_connection()
