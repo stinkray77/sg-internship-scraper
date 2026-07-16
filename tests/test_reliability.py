@@ -48,6 +48,21 @@ class DeliveryTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("late", result.error)
 
+    def test_telegram_rate_limit_returns_server_retry_delay(self):
+        response = response_with_json(
+            {"parameters": {"retry_after": 23}},
+            status_code=429,
+        )
+        response.text = "Too Many Requests"
+        with (
+            patch("main.os.getenv", side_effect=lambda name: "value"),
+            patch("main.requests.post", return_value=response),
+        ):
+            result = main.send_telegram_alert({})
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.retry_after_seconds, 23)
+
     def test_enqueue_uses_atomic_insert(self):
         conn = MagicMock()
         cursor = conn.cursor.return_value
@@ -151,6 +166,35 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(failures, 0)
         complete.assert_called_once_with(conn, "job_1")
         conn.close.assert_called_once()
+
+    def test_delivery_loop_waits_and_retries_rate_limited_row(self):
+        conn = MagicMock()
+        payload = {"title": "Software Engineer Intern"}
+        with (
+            patch("main.DRY_RUN", False),
+            patch("main.get_db_connection", return_value=conn),
+            patch(
+                "main.claim_due_delivery",
+                side_effect=[("job_1", payload, 1), None],
+            ),
+            patch(
+                "main.send_telegram_alert",
+                side_effect=[
+                    main.DeliveryResult(False, "HTTP 429", 23),
+                    main.DeliveryResult(True),
+                ],
+            ) as send,
+            patch("main.time.sleep") as sleep,
+            patch("main.complete_delivery") as complete,
+            patch("main.fail_delivery") as fail,
+        ):
+            failures = main.deliver_pending_jobs()
+
+        self.assertEqual(failures, 0)
+        self.assertEqual(send.call_count, 2)
+        sleep.assert_called_once_with(24)
+        complete.assert_called_once_with(conn, "job_1")
+        fail.assert_not_called()
 
     def test_canary_delivers_only_its_queue_row(self):
         enqueue_conn = MagicMock()

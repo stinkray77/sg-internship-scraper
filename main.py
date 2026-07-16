@@ -8,6 +8,7 @@ import requests
 import re
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 import psycopg2
@@ -55,6 +56,8 @@ JOB_LOOKBACK_HOURS = positive_env_int("JOB_LOOKBACK_HOURS", 72)
 RESULTS_PER_SOURCE = positive_env_int("RESULTS_PER_SOURCE", 50)
 HTTP_TIMEOUT_SECONDS = 20
 TELEGRAM_TIMEOUT_SECONDS = 15
+MAX_TELEGRAM_RATE_LIMIT_RETRIES = 3
+TELEGRAM_RETRY_BUFFER_SECONDS = 1
 MAX_DELIVERY_ATTEMPTS = 5
 STALE_DELIVERY_MINUTES = 30
 DRY_RUN = False
@@ -64,6 +67,7 @@ DRY_RUN = False
 class DeliveryResult:
     success: bool
     error: str | None = None
+    retry_after_seconds: int | None = None
 
 
 @dataclass
@@ -201,7 +205,17 @@ def send_telegram_alert(job) -> DeliveryResult:
         if response.status_code != 200:
             error = f"HTTP {response.status_code}: {response.text[:500]}"
             print(f"❌ TELEGRAM API ERROR: {error}")
-            return DeliveryResult(False, error)
+            retry_after_seconds = None
+            if response.status_code == 429:
+                try:
+                    retry_after_seconds = int(
+                        response.json().get("parameters", {}).get("retry_after")
+                    )
+                    if retry_after_seconds <= 0:
+                        retry_after_seconds = None
+                except (AttributeError, TypeError, ValueError):
+                    retry_after_seconds = None
+            return DeliveryResult(False, error, retry_after_seconds)
         else:
             print("✅ Message successfully sent to Telegram!")
             return DeliveryResult(True)
@@ -426,6 +440,23 @@ def deliver_pending_jobs(only_job_id: str | None = None) -> int:
 
             job_id, payload, attempt_count = claimed
             result = send_telegram_alert(payload)
+            rate_limit_retries = 0
+            while (
+                not result.success
+                and result.retry_after_seconds is not None
+                and rate_limit_retries < MAX_TELEGRAM_RATE_LIMIT_RETRIES
+            ):
+                wait_seconds = (
+                    result.retry_after_seconds + TELEGRAM_RETRY_BUFFER_SECONDS
+                )
+                rate_limit_retries += 1
+                print(
+                    f"⏳ Telegram rate limit for {job_id}; waiting "
+                    f"{wait_seconds}s before retry "
+                    f"{rate_limit_retries}/{MAX_TELEGRAM_RATE_LIMIT_RETRIES}."
+                )
+                time.sleep(wait_seconds)
+                result = send_telegram_alert(payload)
             if result.success:
                 complete_delivery(conn, job_id)
             else:
