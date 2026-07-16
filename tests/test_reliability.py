@@ -37,6 +37,50 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn("One &lt; Two", payload["text"])
         self.assertIn("C++ &amp; Python", payload["text"])
         self.assertEqual(post.call_args.kwargs["timeout"], 15)
+        self.assertEqual(
+            payload["link_preview_options"],
+            {"is_disabled": True},
+        )
+
+    def test_telegram_reopened_card_shows_detailed_eligibility(self):
+        message = main.build_telegram_message({
+            "lifecycle_event": "reopened",
+            "company": "Example Capital",
+            "title": "Quant Developer Intern",
+            "job_url": "https://example.com/apply?a=1&b=2",
+            "location": "Singapore",
+            "date_posted": "2026-07-16T10:00:00+00:00",
+            "first_seen_at": "2026-07-01T10:00:00+00:00",
+            "source_label": "Example Capital official careers",
+            "eligibility": {
+                "verdict": "likely_eligible",
+                "degree_levels": ["Bachelor's", "Master's"],
+                "graduation_years": [2028],
+                "duration": "6 months",
+                "work_authorization": "Sponsorship not available",
+            },
+        })
+
+        self.assertIn("REOPENED INTERNSHIP", message)
+        self.assertIn("Likely undergrad eligible", message)
+        self.assertIn("Bachelor&#x27;s, Master&#x27;s", message)
+        self.assertIn("2028", message)
+        self.assertIn("Sponsorship not available", message)
+        self.assertIn("01 Jul 2026", message)
+        self.assertIn("a=1&amp;b=2", message)
+
+    def test_telegram_card_omits_unavailable_optional_fields(self):
+        message = main.build_telegram_message({
+            "company": "Example",
+            "title": "Software Engineer Intern",
+            "location": "Singapore",
+            "job_url": "https://example.com",
+            "eligibility": {"verdict": "unknown"},
+        })
+
+        self.assertIn("Requirements unclear", message)
+        self.assertNotIn("<b>Degree:</b>", message)
+        self.assertNotIn("<b>Graduation:</b>", message)
 
     def test_telegram_timeout_is_a_failed_result(self):
         with (
@@ -319,16 +363,38 @@ class PaginationTests(unittest.TestCase):
           <span class="badge-success">{date_text}</span>
         </div>
         """
-        responses = [MagicMock(text=first_page), MagicMock(text=second_page)]
+        detail = """
+        <script type="application/ld+json">
+        {"@type":"JobPosting","description":"Open to Bachelor students"}
+        </script>
+        """
+        responses = [
+            MagicMock(text=first_page),
+            MagicMock(text=detail),
+            MagicMock(text=second_page),
+            MagicMock(text=detail),
+        ]
         with (
             patch("main.DRY_RUN", True),
             patch("main.http_get", side_effect=responses) as get,
         ):
             stats = main.scrape_internsg_pipeline()
 
-        self.assertEqual(get.call_count, 2)
+        self.assertEqual(get.call_count, 4)
         self.assertEqual(stats.fetched, 2)
         self.assertEqual(stats.queued, 2)
+
+    def test_internsg_extracts_nested_jobposting_description(self):
+        page = """
+        <script type="application/ld+json">
+        {"@graph":[{"@type":"WebPage"},{"@type":"JobPosting",
+        "description":"<p>Open to undergraduate students.</p>"}]}
+        </script>
+        """
+
+        description = main.extract_internsg_description(page)
+
+        self.assertIn("undergraduate students", description)
 
 
 if __name__ == "__main__":

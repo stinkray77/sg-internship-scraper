@@ -25,19 +25,24 @@ that block free HTTP access or require a JavaScript browser are marked
 ## How It Works
 
 1. Load environment variables from `.env` or GitHub Actions secrets.
-2. Create the `seen_jobs` table if it does not exist.
+2. Create or migrate the delivery and lifecycle tables.
 3. Fetch official sources with at most four workers, then process database writes sequentially.
-4. Filter technical student roles and require an explicit Singapore location.
-5. Atomically enqueue unseen jobs in PostgreSQL.
-6. Deliver due alerts to Telegram and persist success or retry state.
-7. Print per-source fetched, matched, queued, duplicate, warning, and error counts.
+4. Filter technical student roles, require an explicit Singapore location, and
+   classify description-based eligibility.
+5. Record each job observation and lifecycle event in PostgreSQL.
+6. Atomically enqueue only new or reopened jobs for Telegram delivery.
+7. Reconcile complete official ATS snapshots and close jobs after three clean misses.
+8. Deliver due alerts to Telegram and persist success or retry state.
+9. Print per-source fetched, matched, queued, duplicate, warning, and error counts.
 
 Title filtering requires a technical keyword and a student-role term. Supported
 terms include internship, co-op, industrial attachment, trainee, summer analyst,
 off-cycle analyst, winternship, insight programme, apprenticeship, and accelerator
 programme. Non-target roles such as sales, marketing, HR, accounting, product or
-project management, retail, and design are excluded. Explicitly PhD-only roles
-are rejected, while inclusive bachelor/master/PhD postings remain eligible.
+project management, retail, and design are excluded. Explicit postgraduate-only
+roles are rejected, while inclusive bachelor/master/PhD postings remain eligible.
+Graduation years, internship duration, and work-authorization language are
+extracted for display but do not hide a job.
 
 Location filtering is fail-closed: a posting must explicitly contain `Singapore` or the country code `SG`. Singapore-anchored onsite, hybrid, and remote roles are accepted. Generic remote, APAC, worldwide, and missing locations are rejected.
 
@@ -163,9 +168,24 @@ Existing databases are migrated automatically with `ALTER TABLE ... ADD COLUMN I
 
 New alerts move through `pending`, `sending`, `failed`, `sent`, or `dead`. Failed alerts retry up to five times with exponential backoff. A delivery left in `sending` for more than 30 minutes is eligible for recovery.
 
+Lifecycle state is separate from delivery state:
+
+- `job_observations` stores the latest normalized payload, structured eligibility,
+  fingerprint, active/closed state, timestamps, and successful-snapshot misses.
+- `job_lifecycle_events` records append-only `backfilled`, `new`, `updated`,
+  `closed`, and `reopened` transitions.
+
+Existing non-canary queue rows are backfilled silently. New and reopened jobs send
+detailed Telegram cards; updates and closures are recorded without alerts. Only
+registry sources explicitly marked `lifecycle_mode: snapshot` can close jobs.
+Limited-window and bespoke sources update their last-seen state but never infer
+that a missing job has closed.
+
 ## Current Limitations
 
-- Role filtering checks job titles, not descriptions.
+- Eligibility descriptions use conservative deterministic parsing. Ambiguous
+  requirements remain `unknown` rather than being rejected.
+- Sources without a usable description remain eligible with an unknown verdict.
 - Location accuracy depends on metadata supplied by each job source.
 - GitHub indexes are discovery sources and may still lag official company career pages.
 - Some scrapers depend on external HTML or third-party APIs that may change.

@@ -2,6 +2,8 @@ import unittest
 
 import datetime
 
+from eligibility import assess_eligibility
+
 from main import (
     find_recent_singapore_quant_jobs,
     is_quant_intern_role,
@@ -44,6 +46,55 @@ class SingaporeJobFilterTests(unittest.TestCase):
             "title": "Quantitative Research Intern",
             "description": "Open to Bachelor, Master, or PhD students.",
         }))
+
+    def test_structured_eligibility_extracts_detailed_requirements(self):
+        assessment = assess_eligibility(
+            "Software Engineer Intern",
+            """
+            <p>Open to Bachelor's or Master's students graduating in 2028.</p>
+            <p>This is a 6 month internship. Candidates must already have the
+            legal right to work in Singapore.</p>
+            """,
+        )
+
+        self.assertEqual(assessment.verdict, "likely_eligible")
+        self.assertEqual(assessment.degree_levels, ["Bachelor's", "Master's"])
+        self.assertEqual(assessment.graduation_years, [2028])
+        self.assertEqual(assessment.duration, "6 month")
+        self.assertEqual(
+            assessment.work_authorization,
+            "Existing work authorization required",
+        )
+
+    def test_structured_eligibility_rejects_exclusive_postgraduate_roles(self):
+        descriptions = [
+            "PhD candidates only.",
+            "You must be currently pursuing a Master's degree.",
+            "Open to postgraduate students only.",
+        ]
+
+        for description in descriptions:
+            with self.subTest(description=description):
+                self.assertEqual(
+                    assess_eligibility(
+                        "Quantitative Research Intern",
+                        description,
+                    ).verdict,
+                    "ineligible",
+                )
+
+    def test_structured_eligibility_keeps_unknown_and_inclusive_roles(self):
+        self.assertEqual(
+            assess_eligibility("Software Engineer Intern", "Team player").verdict,
+            "unknown",
+        )
+        self.assertEqual(
+            assess_eligibility(
+                "Quantitative Research Intern",
+                "Open to Bachelor, Master, or PhD students.",
+            ).verdict,
+            "likely_eligible",
+        )
 
     def test_quant_specific_title_filter(self):
         self.assertTrue(is_quant_intern_role("Quantitative Research Internship"))

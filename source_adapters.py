@@ -21,6 +21,7 @@ class JobCandidate:
     date_posted: object = None
     description: str = ""
     company_key: str | None = None
+    source_label: str | None = None
 
     def to_payload(self) -> dict:
         return {
@@ -34,6 +35,7 @@ class JobCandidate:
             "country": self.country,
             "date_posted": self.date_posted,
             "description": self.description,
+            "source_label": self.source_label or self.source_id,
         }
 
 
@@ -43,6 +45,7 @@ class SourceFetchResult:
     candidates: list[JobCandidate] = field(default_factory=list)
     fetched: int = 0
     error: str | None = None
+    warnings: list[str] = field(default_factory=list)
 
 
 REQUIRED_SOURCE_FIELDS = {"id", "company", "adapter", "enabled", "config"}
@@ -91,6 +94,13 @@ def validate_source_registry(sources: list[dict]) -> None:
             raise ValueError(f"enabled must be boolean for {source_id}")
         if not isinstance(source["config"], dict):
             raise ValueError(f"config must be an object for {source_id}")
+        lifecycle_mode = source.get("lifecycle_mode", "seen_only")
+        if lifecycle_mode not in {"seen_only", "snapshot"}:
+            raise ValueError(f"invalid lifecycle mode for {source_id}")
+        if lifecycle_mode == "snapshot" and source["adapter"] == "bespoke":
+            raise ValueError(
+                f"bespoke source {source_id} cannot claim a complete snapshot"
+            )
 
 
 def _candidate(
@@ -108,6 +118,7 @@ def _candidate(
         external_id=str(raw_id),
         company=source["company"],
         company_key=source.get("dedupe_company") or source["company"],
+        source_label=f"{source['company']} official careers",
         title=str(title or ""),
         job_url=str(job_url or source["config"].get("url", "")),
         **kwargs,
@@ -122,15 +133,25 @@ def fetch_source(source: dict, requester) -> SourceFetchResult:
 
     adapter = source["adapter"]
     try:
-        candidates, fetched = {
-            "greenhouse": fetch_greenhouse,
-            "lever": fetch_lever,
-            "smartrecruiters": fetch_smartrecruiters,
-            "workday": fetch_workday,
-            "ashby": fetch_ashby,
-            "bespoke": fetch_bespoke,
-        }[adapter](source, requester)
-        return SourceFetchResult(source["id"], candidates, fetched)
+        warnings = []
+        if adapter in {"smartrecruiters", "workday"}:
+            fetcher = {
+                "smartrecruiters": fetch_smartrecruiters,
+                "workday": fetch_workday,
+            }[adapter]
+            candidates, fetched = fetcher(
+                source,
+                requester,
+                warnings=warnings,
+            )
+        else:
+            candidates, fetched = {
+                "greenhouse": fetch_greenhouse,
+                "lever": fetch_lever,
+                "ashby": fetch_ashby,
+                "bespoke": fetch_bespoke,
+            }[adapter](source, requester)
+        return SourceFetchResult(source["id"], candidates, fetched, warnings=warnings)
     except Exception as error:
         return SourceFetchResult(source["id"], error=str(error))
 
@@ -188,7 +209,7 @@ def fetch_lever(source: dict, requester):
     return candidates, len(jobs)
 
 
-def fetch_smartrecruiters(source: dict, requester):
+def fetch_smartrecruiters(source: dict, requester, warnings=None):
     token = source["config"]["token"]
     jobs = []
     offset = 0
@@ -207,28 +228,54 @@ def fetch_smartrecruiters(source: dict, requester):
         if not content or offset >= page.get("totalFound", offset):
             break
     candidates = []
+    warnings = warnings if warnings is not None else []
     for job in jobs:
         location = job.get("location") or {}
         raw_id = job.get("id")
+        title = job.get("name") or ""
+        location_values = [location.get("fullLocation"), location.get("city")]
+        description = ""
+        if _looks_like_student_technical(title) and _looks_like_singapore(
+            [*location_values, location.get("country")]
+        ):
+            try:
+                detail_url = job.get("ref") or (
+                    f"https://api.smartrecruiters.com/v1/companies/"
+                    f"{token}/postings/{raw_id}"
+                )
+                detail = requester("GET", detail_url).json()
+                sections = ((detail.get("jobAd") or {}).get("sections") or {})
+                description = " ".join(
+                    str((sections.get(name) or {}).get("text") or "")
+                    for name in (
+                        "jobDescription",
+                        "qualifications",
+                        "additionalInformation",
+                    )
+                ).strip()
+            except Exception as error:
+                warnings.append(f"detail {raw_id}: {error}")
         candidates.append(_candidate(
             source,
             raw_id,
-            job.get("name"),
+            title,
             f"https://jobs.smartrecruiters.com/{token}/{raw_id}",
-            location=[location.get("fullLocation"), location.get("city")],
+            location=location_values,
             country=location.get("country"),
             date_posted=job.get("releasedDate"),
+            description=description,
         ))
     return candidates, len(jobs)
 
 
-def fetch_workday(source: dict, requester):
+def fetch_workday(source: dict, requester, warnings=None):
     config = source["config"]
     host = config["host"].rstrip("/")
     tenant = config["tenant"]
     site = config["site"]
     base = f"{host}/wday/cxs/{tenant}/{site}"
     jobs = []
+    warnings = warnings if warnings is not None else []
     offset = 0
     for _ in range(100):
         page = requester(
@@ -252,9 +299,12 @@ def fetch_workday(source: dict, requester):
         description = ""
         detail = {}
         if _looks_like_student_technical(title) and _looks_like_singapore(location):
-            detail_document = requester("GET", f"{base}{external_path}").json()
-            detail = detail_document.get("jobPostingInfo") or {}
-            description = detail.get("jobDescription") or ""
+            try:
+                detail_document = requester("GET", f"{base}{external_path}").json()
+                detail = detail_document.get("jobPostingInfo") or {}
+                description = detail.get("jobDescription") or ""
+            except Exception as error:
+                warnings.append(f"detail {external_path}: {error}")
         url = detail.get("externalUrl") or urljoin(host, external_path)
         candidates.append(_candidate(
             source,

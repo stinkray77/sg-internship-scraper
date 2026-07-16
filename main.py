@@ -21,6 +21,7 @@ from jobspy import scrape_jobs
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 from source_adapters import fetch_source, load_source_registry
+from eligibility import EligibilityAssessment, assess_eligibility
 
 # LOAD FIRST
 load_dotenv()
@@ -60,6 +61,7 @@ MAX_TELEGRAM_RATE_LIMIT_RETRIES = 3
 TELEGRAM_RETRY_BUFFER_SECONDS = 1
 MAX_DELIVERY_ATTEMPTS = 5
 STALE_DELIVERY_MINUTES = 30
+CLOSE_AFTER_SUCCESSFUL_MISSES = 3
 DRY_RUN = False
 
 
@@ -79,6 +81,12 @@ class PipelineStats:
     duplicates: int = 0
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+
+
+@dataclass
+class LifecycleOutcome:
+    event_type: str
+    queued: bool = False
 
 
 def build_http_session() -> requests.Session:
@@ -162,26 +170,173 @@ def init_db():
         CREATE INDEX IF NOT EXISTS seen_jobs_recent_dedupe_idx
         ON seen_jobs (dedupe_key, created_at);
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS job_observations (
+            observation_id TEXT PRIMARY KEY,
+            source_id TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            company TEXT NOT NULL,
+            title TEXT NOT NULL,
+            job_url TEXT,
+            payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+            eligibility JSONB NOT NULL DEFAULT '{}'::jsonb,
+            lifecycle_status TEXT NOT NULL DEFAULT 'active',
+            content_fingerprint TEXT,
+            lifecycle_version INTEGER NOT NULL DEFAULT 1,
+            missing_snapshot_count INTEGER NOT NULL DEFAULT 0,
+            first_seen_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_changed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            closed_at TIMESTAMPTZ,
+            UNIQUE (source_id, external_id)
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS job_lifecycle_events (
+            event_id BIGSERIAL PRIMARY KEY,
+            observation_id TEXT NOT NULL REFERENCES job_observations(observation_id),
+            event_type TEXT NOT NULL,
+            event_version INTEGER NOT NULL,
+            occurred_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            before_payload JSONB,
+            after_payload JSONB,
+            UNIQUE (observation_id, event_version, event_type)
+        );
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS job_observations_source_status_idx
+        ON job_observations (source_id, lifecycle_status, last_seen_at);
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS job_lifecycle_events_observation_idx
+        ON job_lifecycle_events (observation_id, occurred_at);
+    """)
+    cur.execute("""
+        INSERT INTO job_observations (
+            observation_id, source_id, external_id, company, title, job_url,
+            payload, eligibility, lifecycle_status, lifecycle_version,
+            first_seen_at, last_seen_at, last_changed_at
+        )
+        SELECT
+            jobs.job_id,
+            COALESCE(NULLIF(jobs.payload->>'source_id', ''), NULLIF(jobs.site, ''), 'legacy'),
+            jobs.job_id,
+            COALESCE(NULLIF(jobs.company, ''), 'Unknown Company'),
+            COALESCE(NULLIF(jobs.title, ''), 'Untitled Role'),
+            jobs.payload->>'job_url',
+            COALESCE(jobs.payload, '{}'::jsonb),
+            COALESCE(jobs.payload->'eligibility', '{}'::jsonb),
+            'active',
+            0,
+            COALESCE(jobs.created_at, CURRENT_TIMESTAMP),
+            COALESCE(jobs.sent_at, jobs.created_at, CURRENT_TIMESTAMP),
+            COALESCE(jobs.sent_at, jobs.created_at, CURRENT_TIMESTAMP)
+        FROM seen_jobs AS jobs
+        WHERE jobs.job_id NOT LIKE 'system_canary_%'
+          AND COALESCE(jobs.payload->>'message_type', '') <> 'canary'
+          AND jobs.payload->>'lifecycle_event' IS NULL
+        ON CONFLICT DO NOTHING;
+    """)
+    cur.execute("""
+        INSERT INTO job_lifecycle_events (
+            observation_id, event_type, event_version, occurred_at, after_payload
+        )
+        SELECT observation_id, 'backfilled', 0, first_seen_at, payload
+        FROM job_observations AS observations
+        WHERE observations.lifecycle_version = 0
+        ON CONFLICT DO NOTHING;
+    """)
     conn.commit()
     cur.close()
     conn.close()
 
-def send_telegram_alert(job) -> DeliveryResult:
-    site = job.get('site', 'Unknown')
-    title = job.get('title', 'No Title')
-    company = job.get('company', 'No Company')
-    url = job.get('job_url', '#')
-    date_posted = job.get('date_posted') or 'Recent'
-    message_type = job.get("message_type", "job")
-    heading = "[CANARY] Scraper delivery check" if message_type == "canary" else f"Internship ({site})"
-    
-    msg = (
-        f"🇸🇬 <b>{html.escape(str(heading))}</b>\n\n"
-        f"🏢 <b>{html.escape(str(company))}</b>\n"
-        f"👨‍💻 {html.escape(str(title))}\n"
-        f"📅 <b>Posted:</b> {html.escape(str(date_posted))}\n"
-        f"🔗 <a href=\"{html.escape(str(url), quote=True)}\">Apply Here</a>"
+def _message_value(value: object, limit: int = 300) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) > limit:
+        text = f"{text[:limit - 1].rstrip()}…"
+    return html.escape(text)
+
+
+def _format_message_date(value: object) -> str:
+    if not value:
+        return "Not provided"
+    if isinstance(value, (datetime.datetime, datetime.date)):
+        parsed = value
+    else:
+        raw = str(value)
+        try:
+            parsed = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            try:
+                parsed = datetime.date.fromisoformat(raw)
+            except ValueError:
+                return raw
+    return parsed.strftime("%d %b %Y")
+
+
+def _format_location(value: object) -> str:
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(str(item) for item in value if item)
+    return str(value or "Not provided")
+
+
+def build_telegram_message(job: dict) -> str:
+    if job.get("message_type") == "canary":
+        return (
+            "🧪 <b>SCRAPER CANARY</b>\n\n"
+            f"<b>{_message_value(job.get('company'), 180)}</b>\n"
+            f"{_message_value(job.get('title'), 300)}\n\n"
+            "✅ Database queue and Telegram delivery are working."
+        )
+
+    event_type = job.get("lifecycle_event", "new")
+    heading = "🔁 REOPENED INTERNSHIP" if event_type == "reopened" else "🟢 NEW INTERNSHIP"
+    eligibility = job.get("eligibility") or {}
+    verdict_labels = {
+        "likely_eligible": "Likely undergrad eligible",
+        "ineligible": "Postgraduate-only requirement",
+        "unknown": "Requirements unclear",
+    }
+    lines = [
+        f"<b>{heading}</b>",
+        "",
+        f"<b>{_message_value(job.get('company') or 'Unknown Company', 180)}</b>",
+        _message_value(job.get("title") or "Untitled Role", 300),
+        "",
+        f"📍 <b>Location:</b> {_message_value(_format_location(job.get('location')), 250)}",
+        (
+            "🎓 <b>Eligibility:</b> "
+            f"{_message_value(verdict_labels.get(eligibility.get('verdict'), 'Requirements unclear'))}"
+        ),
+    ]
+    optional_eligibility = (
+        ("Degree", ", ".join(eligibility.get("degree_levels") or [])),
+        ("Graduation", ", ".join(str(year) for year in eligibility.get("graduation_years") or [])),
+        ("Duration", eligibility.get("duration")),
+        ("Work rights", eligibility.get("work_authorization")),
     )
+    for label, value in optional_eligibility:
+        if value:
+            lines.append(f"   • <b>{label}:</b> {_message_value(value, 250)}")
+    lines.extend([
+        "",
+        f"📅 <b>Posted:</b> {_message_value(_format_message_date(job.get('date_posted')))}",
+        f"👀 <b>First seen:</b> {_message_value(_format_message_date(job.get('first_seen_at')))}",
+        f"🔎 <b>Source:</b> {_message_value(job.get('source_label') or job.get('site') or 'Unknown', 180)}",
+        "",
+        (
+            f"🔗 <a href=\"{html.escape(str(job.get('job_url') or '#')[:1000], quote=True)}\">"
+            "View and apply</a>"
+        ),
+    ])
+    message = "\n".join(lines)
+    if len(BeautifulSoup(message, "html.parser").get_text()) > 3500:
+        raise ValueError("Telegram message exceeds the 3500-character safety limit")
+    return message
+
+
+def send_telegram_alert(job) -> DeliveryResult:
+    msg = build_telegram_message(job)
     
     # Check if credentials exist before trying to send
     import os
@@ -194,7 +349,12 @@ def send_telegram_alert(job) -> DeliveryResult:
         return DeliveryResult(False, error)
 
     tg_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": msg, "parse_mode": "HTML"}
+    payload = {
+        "chat_id": chat_id,
+        "text": msg,
+        "parse_mode": "HTML",
+        "link_preview_options": {"is_disabled": True},
+    }
     
     try:
         response = requests.post(
@@ -268,10 +428,15 @@ def enqueue_job(
     job_id: str,
     job: dict,
     stats: PipelineStats,
+    *,
+    bypass_recent_dedupe: bool = False,
+    commit: bool = True,
+    count_match: bool = True,
 ) -> bool:
     """Persist a candidate for delivery, or print it during dry-run."""
     job = normalize_job_payload(job)
-    stats.matched += 1
+    if count_match:
+        stats.matched += 1
     if DRY_RUN:
         print(f"🧪 Would enqueue: {job['title']} at {job['company']}")
         stats.queued += 1
@@ -280,20 +445,21 @@ def enqueue_job(
     dedupe_key = make_dedupe_key(job)
     cur = conn.cursor()
     try:
-        cur.execute(
-            """
-            SELECT job_id
-            FROM seen_jobs
-            WHERE dedupe_key = %s
-              AND delivery_status IN ('pending', 'sending', 'failed', 'sent')
-              AND created_at >= CURRENT_TIMESTAMP - INTERVAL '30 days'
-            LIMIT 1
-            """,
-            (dedupe_key,),
-        )
-        if cur.fetchone() is not None:
-            stats.duplicates += 1
-            return False
+        if not bypass_recent_dedupe:
+            cur.execute(
+                """
+                SELECT job_id
+                FROM seen_jobs
+                WHERE dedupe_key = %s
+                  AND delivery_status IN ('pending', 'sending', 'failed', 'sent')
+                  AND created_at >= CURRENT_TIMESTAMP - INTERVAL '30 days'
+                LIMIT 1
+                """,
+                (dedupe_key,),
+            )
+            if cur.fetchone() is not None:
+                stats.duplicates += 1
+                return False
 
         cur.execute(
             """
@@ -315,12 +481,299 @@ def enqueue_job(
             ),
         )
         queued = cur.fetchone() is not None
-        conn.commit()
+        if commit:
+            conn.commit()
         if queued:
             stats.queued += 1
         else:
             stats.duplicates += 1
         return queued
+    except Exception:
+        if commit:
+            conn.rollback()
+        raise
+    finally:
+        cur.close()
+
+
+def make_content_fingerprint(job: dict) -> str:
+    material = {
+        "company": job.get("company"),
+        "title": job.get("title"),
+        "job_url": job.get("job_url"),
+        "location": job.get("location"),
+        "country": job.get("country"),
+        "date_posted": job.get("date_posted"),
+        "eligibility": job.get("eligibility"),
+    }
+    encoded = json.dumps(json_safe(material), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _record_lifecycle_event(
+    cur,
+    observation_id: str,
+    event_type: str,
+    event_version: int,
+    before_payload: dict | None,
+    after_payload: dict,
+    occurred_at: datetime.datetime,
+) -> None:
+    cur.execute(
+        """
+        INSERT INTO job_lifecycle_events (
+            observation_id, event_type, event_version, occurred_at,
+            before_payload, after_payload
+        )
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT DO NOTHING
+        """,
+        (
+            observation_id,
+            event_type,
+            event_version,
+            occurred_at,
+            Json(json_safe(before_payload), dumps=json.dumps) if before_payload else None,
+            Json(json_safe(after_payload), dumps=json.dumps),
+        ),
+    )
+
+
+def observe_job(
+    conn,
+    observation_id: str,
+    source_id: str,
+    external_id: str,
+    job: dict,
+    stats: PipelineStats,
+    assessment: EligibilityAssessment | None = None,
+) -> LifecycleOutcome:
+    """Upsert lifecycle state and queue only new or reopened opportunities."""
+    assessment = assessment or assess_eligibility(
+        job.get("title", ""),
+        job.get("description", ""),
+    )
+    if assessment.verdict == "ineligible":
+        return LifecycleOutcome("excluded")
+
+    stats.matched += 1
+    payload = normalize_job_payload(job)
+    payload["source_id"] = source_id
+    payload["eligibility"] = assessment.to_payload()
+    payload.pop("description", None)
+    fingerprint = make_content_fingerprint(payload)
+
+    if DRY_RUN:
+        queued = enqueue_job(
+            conn,
+            observation_id,
+            {**payload, "lifecycle_event": "new"},
+            stats,
+            count_match=False,
+        )
+        return LifecycleOutcome("new", queued)
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT lifecycle_status, content_fingerprint, lifecycle_version,
+                   payload, first_seen_at
+            FROM job_observations
+            WHERE observation_id = %s
+            FOR UPDATE
+            """,
+            (observation_id,),
+        )
+        existing = cur.fetchone()
+        queued = False
+        event_type = "unchanged"
+
+        if existing is None:
+            version = 1
+            first_seen_at = now
+            cur.execute(
+                """
+                INSERT INTO job_observations (
+                    observation_id, source_id, external_id, company, title,
+                    job_url, payload, eligibility, lifecycle_status,
+                    content_fingerprint, lifecycle_version,
+                    missing_snapshot_count, first_seen_at, last_seen_at,
+                    last_changed_at, closed_at
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s, %s,
+                    0, %s, %s, %s, NULL
+                )
+                """,
+                (
+                    observation_id,
+                    source_id,
+                    external_id,
+                    payload["company"],
+                    payload["title"],
+                    payload.get("job_url"),
+                    Json(payload, dumps=json.dumps),
+                    Json(assessment.to_payload(), dumps=json.dumps),
+                    fingerprint,
+                    version,
+                    now,
+                    now,
+                    now,
+                ),
+            )
+            event_type = "new"
+            _record_lifecycle_event(
+                cur, observation_id, event_type, version, None, payload, now
+            )
+        else:
+            status, old_fingerprint, version, old_payload, first_seen_at = existing
+            old_payload = old_payload or {}
+            if status == "closed":
+                version += 1
+                event_type = "reopened"
+                changed_at = now
+            elif old_fingerprint and old_fingerprint != fingerprint:
+                version += 1
+                event_type = "updated"
+                changed_at = now
+            else:
+                changed_at = None
+
+            cur.execute(
+                """
+                UPDATE job_observations
+                SET source_id = %s,
+                    external_id = %s,
+                    company = %s,
+                    title = %s,
+                    job_url = %s,
+                    payload = %s,
+                    eligibility = %s,
+                    lifecycle_status = 'active',
+                    content_fingerprint = %s,
+                    lifecycle_version = %s,
+                    missing_snapshot_count = 0,
+                    last_seen_at = %s,
+                    last_changed_at = COALESCE(%s, last_changed_at),
+                    closed_at = NULL
+                WHERE observation_id = %s
+                """,
+                (
+                    source_id,
+                    external_id,
+                    payload["company"],
+                    payload["title"],
+                    payload.get("job_url"),
+                    Json(payload, dumps=json.dumps),
+                    Json(assessment.to_payload(), dumps=json.dumps),
+                    fingerprint,
+                    version,
+                    now,
+                    changed_at,
+                    observation_id,
+                ),
+            )
+            if event_type in {"updated", "reopened"}:
+                _record_lifecycle_event(
+                    cur,
+                    observation_id,
+                    event_type,
+                    version,
+                    old_payload,
+                    payload,
+                    now,
+                )
+
+        if event_type in {"new", "reopened"}:
+            delivery_id = observation_id
+            if event_type == "reopened":
+                delivery_id = f"{observation_id}:reopened:{version}"
+            delivery_payload = {
+                **payload,
+                "lifecycle_event": event_type,
+                "first_seen_at": json_safe(first_seen_at),
+            }
+            queued = enqueue_job(
+                conn,
+                delivery_id,
+                delivery_payload,
+                stats,
+                bypass_recent_dedupe=event_type == "reopened",
+                commit=False,
+                count_match=False,
+            )
+
+        conn.commit()
+        return LifecycleOutcome(event_type, queued)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+
+
+def reconcile_source_snapshot(
+    conn,
+    source_id: str,
+    observed_ids: set[str],
+) -> list[str]:
+    """Close jobs missing from three consecutive successful full snapshots."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cur = conn.cursor()
+    closed = []
+    try:
+        cur.execute(
+            """
+            SELECT observation_id, missing_snapshot_count, lifecycle_version, payload
+            FROM job_observations
+            WHERE source_id = %s
+              AND lifecycle_status = 'active'
+              AND NOT (observation_id = ANY(%s::text[]))
+            FOR UPDATE
+            """,
+            (source_id, sorted(observed_ids)),
+        )
+        for observation_id, misses, version, payload in cur.fetchall():
+            next_misses = misses + 1
+            if next_misses < CLOSE_AFTER_SUCCESSFUL_MISSES:
+                cur.execute(
+                    """
+                    UPDATE job_observations
+                    SET missing_snapshot_count = %s
+                    WHERE observation_id = %s
+                    """,
+                    (next_misses, observation_id),
+                )
+                continue
+
+            version += 1
+            after_payload = {**(payload or {}), "lifecycle_status": "closed"}
+            cur.execute(
+                """
+                UPDATE job_observations
+                SET lifecycle_status = 'closed',
+                    lifecycle_version = %s,
+                    missing_snapshot_count = %s,
+                    last_changed_at = %s,
+                    closed_at = %s
+                WHERE observation_id = %s
+                """,
+                (version, next_misses, now, now, observation_id),
+            )
+            _record_lifecycle_event(
+                cur,
+                observation_id,
+                "closed",
+                version,
+                payload or {},
+                after_payload,
+                now,
+            )
+            closed.append(observation_id)
+        conn.commit()
+        return closed
     except Exception:
         conn.rollback()
         raise
@@ -544,41 +997,17 @@ def is_quant_intern_role(title: str) -> bool:
 
 
 def is_explicitly_phd_only(title: str, description: str = "") -> bool:
-    """Reject roles that explicitly require PhD study, not inclusive degree lists."""
-    title_lower = str(title or "").lower()
-    if re.search(r"\bph\.?d\b", title_lower):
-        return True
-
-    description_text = BeautifulSoup(
-        str(description or ""),
-        "html.parser",
-    ).get_text(" ", strip=True).lower()
-    if not re.search(r"\bph\.?d\b|doctoral", description_text):
-        return False
-    inclusive_degree = re.search(
-        r"\b(bachelor|undergraduate|b\.?s\.?|master|m\.?s\.?)\b.{0,80}"
-        r"\b(ph\.?d|doctoral)\b|"
-        r"\b(ph\.?d|doctoral)\b.{0,80}"
-        r"\b(bachelor|undergraduate|b\.?s\.?|master|m\.?s\.?)\b",
-        description_text,
-    )
-    if inclusive_degree:
-        return False
-    return bool(re.search(
-        r"\b(ph\.?d candidates? only|doctoral candidates? only|"
-        r"must be (?:currently )?pursuing (?:a )?ph\.?d|"
-        r"currently pursuing (?:a )?ph\.?d|ph\.?d students? only)\b",
-        description_text,
-    ))
+    """Compatibility helper for explicit postgraduate-only requirements."""
+    return assess_eligibility(title, description).verdict == "ineligible"
 
 
 def is_undergrad_technical_job(job: dict) -> bool:
     return (
         is_target_role(job.get("title", ""))
-        and not is_explicitly_phd_only(
+        and assess_eligibility(
             job.get("title", ""),
             job.get("description", ""),
-        )
+        ).verdict != "ineligible"
     )
 
 SINGAPORE_LOCATION_PATTERN = re.compile(
@@ -715,7 +1144,7 @@ def run_pipeline():
             title = row['title']
             company = row['company']
 
-            if not is_undergrad_technical_job(job_data):
+            if not is_target_role(job_data.get("title", "")):
                 print(f"🗑️ Filtered out non-target role: {title} at {company}")
                 continue
 
@@ -724,9 +1153,26 @@ def run_pipeline():
                 continue
 
             raw_id = str(row['id'])
-            site = row['site']
+            site = str(row['site'])
+            assessment = assess_eligibility(
+                job_data.get("title", ""),
+                job_data.get("description", ""),
+            )
+            if assessment.verdict == "ineligible":
+                print(f"🎓 Filtered out postgraduate-only role: {title} at {company}")
+                continue
+            job_data["source_id"] = site
+            job_data["source_label"] = f"{site.title()} job listing"
             unique_id = f"{site}_{raw_id}"
-            enqueue_job(conn, unique_id, job_data, stats)
+            observe_job(
+                conn,
+                unique_id,
+                site,
+                raw_id,
+                job_data,
+                stats,
+                assessment,
+            )
 
     except Exception as e:
         print(f"❌ Pipeline Error: {e}")
@@ -770,29 +1216,82 @@ def scrape_registry_pipelines():
                 stats_list.append(stats)
                 continue
             stats.fetched = result.fetched
+            stats.warnings.extend(result.warnings)
+            for warning in result.warnings:
+                print(f"⚠️ {source['id']} warning: {warning}")
             if result.error:
                 print(f"⚠️ {source['id']} source error: {result.error}")
                 stats.errors.append(result.error)
                 stats_list.append(stats)
                 continue
 
+            observed_ids = set()
             for candidate in result.candidates:
                 job_data = candidate.to_payload()
-                if not is_undergrad_technical_job(job_data):
+                if not is_target_role(job_data.get("title", "")):
                     continue
                 if not is_singapore_job(job_data):
                     continue
-
-                # Descriptions are used only for eligibility filtering. Keeping full
-                # HTML in the queue wastes database space and leaks irrelevant copy.
-                job_data.pop("description", None)
+                assessment = assess_eligibility(
+                    job_data.get("title", ""),
+                    job_data.get("description", ""),
+                )
+                if assessment.verdict == "ineligible":
+                    continue
                 unique_id = f"{source['id']}_{candidate.external_id}"
-                enqueue_job(conn, unique_id, job_data, stats)
+                observed_ids.add(unique_id)
+                observe_job(
+                    conn,
+                    unique_id,
+                    source["id"],
+                    candidate.external_id,
+                    job_data,
+                    stats,
+                    assessment,
+                )
+            if (
+                not DRY_RUN
+                and source.get("lifecycle_mode") == "snapshot"
+            ):
+                closed = reconcile_source_snapshot(
+                    conn,
+                    source["id"],
+                    observed_ids,
+                )
+                if closed:
+                    print(f"📪 {source['id']} marked {len(closed)} job(s) closed.")
             stats_list.append(stats)
     finally:
         if conn is not None:
             conn.close()
     return stats_list
+
+
+def extract_internsg_description(page_html: str) -> str:
+    soup = BeautifulSoup(page_html, "html.parser")
+
+    def iter_job_postings(value):
+        if isinstance(value, list):
+            for item in value:
+                yield from iter_job_postings(item)
+        elif isinstance(value, dict):
+            if value.get("@type") == "JobPosting":
+                yield value
+            for item in value.values():
+                if isinstance(item, (dict, list)):
+                    yield from iter_job_postings(item)
+
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+            document = json.loads(script.string or script.get_text())
+        except (TypeError, json.JSONDecodeError):
+            continue
+        for posting in iter_job_postings(document):
+            description = posting.get("description")
+            if description:
+                return str(description)
+    return ""
+
 
 def scrape_internsg_pipeline():
     print("🚀 Running InternSG Pipeline...")
@@ -879,9 +1378,36 @@ def scrape_internsg_pipeline():
                     continue
 
                 canonical_url = url.split('?', 1)[0].rstrip('/')
+                try:
+                    detail_response = http_get(canonical_url, headers=headers)
+                    job_data["description"] = extract_internsg_description(
+                        detail_response.text
+                    )
+                except Exception as error:
+                    warning = f"detail {url}: {error}"
+                    stats.warnings.append(warning)
+                    print(f"⚠️ InternSG {warning}")
+
+                assessment = assess_eligibility(
+                    job_data.get("title", ""),
+                    job_data.get("description", ""),
+                )
+                if assessment.verdict == "ineligible":
+                    continue
+
                 raw_id = canonical_url.split('/')[-1]
                 unique_id = f"internsg_{raw_id}"
-                enqueue_job(conn, unique_id, job_data, stats)
+                job_data["source_id"] = "internsg"
+                job_data["source_label"] = "InternSG"
+                observe_job(
+                    conn,
+                    unique_id,
+                    "internsg",
+                    raw_id,
+                    job_data,
+                    stats,
+                    assessment,
+                )
 
             next_link = soup.select_one('a.next.page-numbers, a[rel="next"]')
             if not next_link or not next_link.get('href'):
@@ -920,7 +1446,16 @@ def scrape_singapore_quant_pipeline():
         for job in jobs:
             url_hash = hashlib.sha256(job["job_url"].encode()).hexdigest()[:24]
             unique_id = f"sg_quant_{url_hash}"
-            enqueue_job(conn, unique_id, job, stats)
+            job["source_id"] = "sg_quant"
+            job["source_label"] = "Singapore Quant Internship Index"
+            observe_job(
+                conn,
+                unique_id,
+                "sg_quant",
+                url_hash,
+                job,
+                stats,
+            )
     except Exception as e:
         print(f"❌ Singapore Quant Pipeline Error: {e}")
         stats.errors.append(str(e))
