@@ -4,25 +4,52 @@ on:
   schedule:
     - cron: '17 * * * *'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Scraper mode for this manual run
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - canary
+          - live
+
+concurrency:
+  group: hourly-job-scraper
+  cancel-in-progress: false
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
         
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: '3.10'
           
       - name: Install Dependencies
         run: pip install -r requirements.txt
+
+      - name: Run Tests
+        run: python -m unittest discover -s tests -v
         
       - name: Run Scraper
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python main.py
+          JOB_LOOKBACK_HOURS: '72'
+          RESULTS_PER_SOURCE: '50'
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.mode }}" = "live" ]; then
+            python main.py
+          elif [ "${{ inputs.mode }}" = "canary" ]; then
+            python main.py --canary
+          else
+            python main.py --dry-run
+          fi
