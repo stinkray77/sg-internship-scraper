@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "sources": [
+    {"id": "greenhouse_stripe", "company": "Stripe", "adapter": "greenhouse", "enabled": true, "config": {"token": "stripe"}},
+    {"id": "greenhouse_optiver", "company": "Optiver", "adapter": "greenhouse", "enabled": true, "config": {"token": "optiver"}},
+    {"id": "greenhouse_tower", "company": "Tower Research Capital", "adapter": "greenhouse", "enabled": true, "config": {"token": "towerresearchcapital"}},
+    {"id": "greenhouse_coinbase", "company": "Coinbase", "adapter": "greenhouse", "enabled": true, "config": {"token": "coinbase"}},
+    {"id": "greenhouse_motional", "company": "Motional", "adapter": "greenhouse", "enabled": true, "config": {"token": "motional"}},
+    {"id": "greenhouse_twilio", "company": "Twilio", "adapter": "greenhouse", "enabled": true, "config": {"token": "twilio"}},
+    {"id": "greenhouse_drw", "company": "DRW", "adapter": "greenhouse", "enabled": true, "config": {"token": "discoverdrw"}},
+    {"id": "greenhouse_drw_engineering", "company": "DRW", "dedupe_company": "DRW", "adapter": "greenhouse", "enabled": true, "config": {"token": "drweng"}},
+    {"id": "greenhouse_worldquant", "company": "WorldQuant", "adapter": "greenhouse", "enabled": true, "config": {"token": "worldquant"}},
+    {"id": "greenhouse_virtu", "company": "Virtu Financial", "adapter": "greenhouse", "enabled": true, "config": {"token": "virtu"}},
+    {"id": "greenhouse_flow_traders", "company": "Flow Traders", "adapter": "greenhouse", "enabled": true, "config": {"token": "flowtraders"}},
+    {"id": "greenhouse_point72", "company": "Point72 / Cubist", "adapter": "greenhouse", "enabled": true, "config": {"token": "point72"}},
+    {"id": "greenhouse_hrt", "company": "Hudson River Trading", "adapter": "greenhouse", "enabled": true, "config": {"token": "wehrtyou"}},
+    {"id": "greenhouse_tudor", "company": "Tudor Investment Group", "adapter": "greenhouse", "enabled": true, "config": {"token": "tudorgroup"}},
+
+    {"id": "lever_shopback", "company": "ShopBack", "adapter": "lever", "enabled": true, "config": {"token": "shopback-2"}},
+    {"id": "smartrecruiters_grab", "company": "Grab", "adapter": "smartrecruiters", "enabled": true, "config": {"token": "Grab"}},
+    {"id": "smartrecruiters_carousell", "company": "Carousell", "adapter": "smartrecruiters", "enabled": true, "config": {"token": "CarousellGroup"}},
+
+    {"id": "workday_barclays", "company": "Barclays", "adapter": "workday", "enabled": true, "config": {"host": "https://barclays.wd3.myworkdayjobs.com", "tenant": "barclays", "site": "External_Career_Site_Barclays"}},
+
+    {"id": "ashby_airwallex", "company": "Airwallex", "adapter": "ashby", "enabled": true, "config": {"board": "airwallex"}},
+    {"id": "ashby_coinhako", "company": "Coinhako", "adapter": "ashby", "enabled": true, "config": {"board": "Coinhako"}},
+
+    {"id": "bespoke_jane_street", "company": "Jane Street", "adapter": "bespoke", "enabled": true, "config": {"url": "https://www.janestreet.com/join-jane-street/open-roles/?type=internship&location=singapore", "job_link_pattern": "/join-jane-street/position/", "page_marker": "Open Roles"}},
+    {"id": "bespoke_citadel", "company": "Citadel / Citadel Securities", "adapter": "bespoke", "enabled": true, "mode": "discovery_only", "config": {"url": "https://www.citadel.com/careers/open-opportunities/", "job_link_pattern": "/careers/details/", "page_marker": "Open Opportunities"}},
+    {"id": "bespoke_imc", "company": "IMC Trading", "adapter": "bespoke", "enabled": true, "mode": "discovery_only", "config": {"url": "https://www.imc.com/careers/jobs/", "job_link_pattern": "/careers/jobs/", "page_marker": "Careers"}},
+    {"id": "bespoke_jump", "company": "Jump Trading", "adapter": "bespoke", "enabled": true, "config": {"url": "https://www.jumptrading.com/careers/", "job_link_pattern": "/careers/", "page_marker": "Students"}},
+    {"id": "bespoke_sig", "company": "SIG", "adapter": "bespoke", "enabled": true, "config": {"url": "https://careers.sig.com/intern-openings", "job_link_pattern": "/job/|/jobs/", "page_marker": "Intern"}},
+    {"id": "bespoke_squarepoint", "company": "Squarepoint Capital", "adapter": "bespoke", "enabled": true, "mode": "discovery_only", "config": {"url": "https://www.squarepoint-capital.com/", "job_link_pattern": "/careers/", "page_marker": "Squarepoint"}},
+    {"id": "bespoke_alphagrep", "company": "AlphaGrep", "adapter": "bespoke", "enabled": true, "config": {"url": "https://www.alpha-grep.com/career/", "job_link_pattern": "career-opportunity", "page_marker": "Career", "location_from_title": true}},
+    {"id": "bespoke_quantedge", "company": "Quantedge Capital", "adapter": "bespoke", "enabled": true, "config": {"url": "https://www.quantedge.com/careers", "job_link_pattern": "career|job", "page_marker": "Careers"}},
+    {"id": "bespoke_dtl", "company": "Dynamic Technology Lab", "adapter": "bespoke", "enabled": true, "mode": "discovery_only", "config": {"url": "https://www.dytechlab.com/careers/", "job_link_pattern": "careers|position", "page_marker": "Careers"}},
+    {"id": "bespoke_sgx", "company": "SGX Group", "adapter": "bespoke", "enabled": true, "config": {"url": "https://careers.sgx.com/go/Intern/4305201/", "additional_urls": ["https://careers.sgx.com/go/Intern/4305201/10/"], "job_link_pattern": "/job/", "page_marker": "Results"}}
+  ]
+}
