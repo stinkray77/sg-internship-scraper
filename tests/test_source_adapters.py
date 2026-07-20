@@ -63,6 +63,12 @@ class RegistryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "version 1"):
                 load_source_registry(path)
 
+    def test_registry_rejects_snapshot_bespoke_source(self):
+        invalid = source("bespoke", url="https://example.com")
+        invalid["lifecycle_mode"] = "snapshot"
+        with self.assertRaisesRegex(ValueError, "complete snapshot"):
+            validate_source_registry([invalid])
+
 
 class StandardAdapterTests(unittest.TestCase):
     def test_greenhouse_normalizes_job(self):
@@ -116,6 +122,38 @@ class StandardAdapterTests(unittest.TestCase):
         self.assertEqual(fetched, 101)
         self.assertEqual(candidates[-1].country, "sg")
 
+    def test_smartrecruiters_fetches_detail_only_for_likely_match(self):
+        listing = {
+            "content": [
+                {
+                    "id": "my-role",
+                    "name": "Software Engineer Intern",
+                    "location": {"country": "my", "city": "Kuala Lumpur"},
+                },
+                {
+                    "id": "sg-role",
+                    "name": "Data Engineering Intern",
+                    "location": {"country": "sg", "city": "Singapore"},
+                },
+            ],
+            "totalFound": 2,
+        }
+        detail = {"jobAd": {"sections": {
+            "jobDescription": {"text": "Build data systems"},
+            "qualifications": {"text": "Open to Bachelor students"},
+        }}}
+        requester = MagicMock(side_effect=[response(listing), response(detail)])
+
+        candidates, fetched = fetch_smartrecruiters(
+            source("smartrecruiters", token="test"),
+            requester,
+        )
+
+        self.assertEqual(fetched, 2)
+        self.assertEqual(requester.call_count, 2)
+        self.assertEqual(candidates[0].description, "")
+        self.assertIn("Bachelor students", candidates[1].description)
+
     def test_workday_fetches_detail_only_for_candidate(self):
         listing = {
             "jobPostings": [{
@@ -141,6 +179,38 @@ class StandardAdapterTests(unittest.TestCase):
         self.assertEqual(fetched, 1)
         self.assertEqual(requester.call_count, 2)
         self.assertIn("Bachelor", candidates[0].description)
+
+    def test_workday_detail_failure_keeps_listing_with_warning(self):
+        listing = {
+            "jobPostings": [{
+                "title": "Software Engineer Intern",
+                "locationsText": "Singapore",
+                "externalPath": "/job/Singapore/Role_JR-1",
+                "postedOn": "Posted Yesterday",
+            }],
+            "total": 1,
+        }
+        warnings = []
+        requester = MagicMock(side_effect=[
+            response(listing),
+            RuntimeError("detail unavailable"),
+        ])
+
+        candidates, fetched = fetch_workday(
+            source(
+                "workday",
+                host="https://example.wd.test",
+                tenant="example",
+                site="Careers",
+            ),
+            requester,
+            warnings=warnings,
+        )
+
+        self.assertEqual(fetched, 1)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].description, "")
+        self.assertIn("detail unavailable", warnings[0])
 
     def test_ashby_skips_unlisted_jobs(self):
         requester = MagicMock(return_value=response({"jobs": [
