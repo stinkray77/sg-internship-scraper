@@ -69,6 +69,12 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "complete snapshot"):
             validate_source_registry([invalid])
 
+    def test_registry_rejects_non_string_tags(self):
+        invalid = source("greenhouse", token="test")
+        invalid["tags"] = ["QUANT", 1]
+        with self.assertRaisesRegex(ValueError, "tags must be"):
+            validate_source_registry([invalid])
+
 
 class StandardAdapterTests(unittest.TestCase):
     def test_greenhouse_normalizes_job(self):
@@ -84,6 +90,20 @@ class StandardAdapterTests(unittest.TestCase):
         )
         self.assertEqual(fetched, 1)
         self.assertEqual(candidates[0].location, "Singapore")
+
+    def test_source_tags_propagate_to_candidate_payload(self):
+        tagged_source = source("greenhouse", token="test")
+        tagged_source["tags"] = ["QUANT"]
+        requester = MagicMock(return_value=response({"jobs": [{
+            "id": 1,
+            "title": "Software Engineer Intern",
+            "absolute_url": "https://example.com/1",
+            "location": {"name": "Singapore"},
+        }]}))
+
+        candidates, _ = fetch_greenhouse(tagged_source, requester)
+
+        self.assertEqual(candidates[0].to_payload()["source_tags"], ["QUANT"])
 
     def test_lever_paginates(self):
         first = [{"id": str(index), "text": "Role"} for index in range(100)]

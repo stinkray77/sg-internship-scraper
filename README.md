@@ -79,9 +79,14 @@ TELEGRAM_TOKEN=your_telegram_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
 JOB_LOOKBACK_HOURS=72
 RESULTS_PER_SOURCE=50
+DELIVERY_TIMEZONE=Asia/Singapore
+QUIET_HOURS_START=0
+QUIET_HOURS_END=8
+DIGEST_MAX_JOBS=8
 ```
 
-The first three values are required for live runs. The lookback and result-count settings are optional and must be positive integers. The same required names are used as GitHub Actions secrets.
+The first three values are required for live runs. The remaining settings are
+optional. The same required names are used as GitHub Actions secrets.
 
 ## Running Locally
 
@@ -141,6 +146,19 @@ Required GitHub repository secrets:
 - `TELEGRAM_TOKEN`
 - `TELEGRAM_CHAT_ID`
 
+Optional delivery configuration:
+
+- `DELIVERY_TIMEZONE` defaults to `Asia/Singapore`.
+- `QUIET_HOURS_START` defaults to `0` and is inclusive.
+- `QUIET_HOURS_END` defaults to `8` and is exclusive.
+- `DIGEST_MAX_JOBS` defaults to `8` and must be between 1 and 8.
+
+Jobs found from 00:00 through 07:59 Singapore time are held for a compact
+category-grouped digest. The first workflow run at or after 08:00 sends due
+digest batches before individual daytime alerts. Jobs found from 08:00 through
+23:59 remain immediate. Setting the quiet-hours start and end to the same hour
+disables digest scheduling.
+
 ## Database
 
 The scraper creates this table automatically:
@@ -159,14 +177,26 @@ CREATE TABLE IF NOT EXISTS seen_jobs (
     last_attempt_at TIMESTAMP,
     next_attempt_at TIMESTAMP,
     sent_at TIMESTAMP,
-    last_error TEXT
+    last_error TEXT,
+    delivery_mode TEXT NOT NULL DEFAULT 'immediate'
 );
 ```
 
 `job_id` is source-prefixed, for example `greenhouse_12345` or `internsg_some-role-slug`.
 Existing databases are migrated automatically with `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, and existing rows remain treated as successfully sent.
 
-New alerts move through `pending`, `sending`, `failed`, `sent`, or `dead`. Failed alerts retry up to five times with exponential backoff. A delivery left in `sending` for more than 30 minutes is eligible for recovery.
+New alerts move through `pending`, `sending`, `failed`, `sent`, or `dead`. The
+`delivery_mode` is fixed to `immediate` or `digest` when a row is enqueued, and
+existing rows migrate to `immediate`. Separate atomic claims prevent daytime
+workers from taking digest rows early. Failed alerts retry up to five times with
+exponential backoff. A delivery left in `sending` for more than 30 minutes is
+eligible for recovery.
+
+Every lifecycle payload stores all matching role categories in the fixed order
+`QUANT`, `AI/ML`, `DATA`, `SWE`, then `TECH` as the fallback. A role is `QUANT`
+when its title is quant-specific or its official source is tagged as a known
+quant firm. Digest jobs are displayed once under their first category while all
+their tags remain visible.
 
 Lifecycle state is separate from delivery state:
 

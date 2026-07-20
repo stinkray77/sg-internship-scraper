@@ -9,8 +9,10 @@ import re
 import sys
 import threading
 import time
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from functools import lru_cache
 import psycopg2
 import pandas as pd
 from psycopg2.extras import Json
@@ -22,6 +24,7 @@ from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 from source_adapters import fetch_source, load_source_registry
 from eligibility import EligibilityAssessment, assess_eligibility
+from categories import CATEGORY_ORDER, classify_job_categories, primary_category
 
 # LOAD FIRST
 load_dotenv()
@@ -53,8 +56,29 @@ def positive_env_int(name: str, default: int) -> int:
     return value
 
 
+def bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw_value = os.environ.get(name, str(default))
+    try:
+        value = int(raw_value)
+    except ValueError as error:
+        raise RuntimeError(f"{name} must be an integer") from error
+    if not minimum <= value <= maximum:
+        raise RuntimeError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
 JOB_LOOKBACK_HOURS = positive_env_int("JOB_LOOKBACK_HOURS", 72)
 RESULTS_PER_SOURCE = positive_env_int("RESULTS_PER_SOURCE", 50)
+DELIVERY_TIMEZONE_NAME = os.environ.get("DELIVERY_TIMEZONE", "Asia/Singapore")
+try:
+    DELIVERY_TIMEZONE = ZoneInfo(DELIVERY_TIMEZONE_NAME)
+except ZoneInfoNotFoundError as error:
+    raise RuntimeError(
+        f"DELIVERY_TIMEZONE is not a known timezone: {DELIVERY_TIMEZONE_NAME}"
+    ) from error
+QUIET_HOURS_START = bounded_env_int("QUIET_HOURS_START", 0, 0, 23)
+QUIET_HOURS_END = bounded_env_int("QUIET_HOURS_END", 8, 0, 23)
+DIGEST_MAX_JOBS = bounded_env_int("DIGEST_MAX_JOBS", 8, 1, 8)
 HTTP_TIMEOUT_SECONDS = 20
 TELEGRAM_TIMEOUT_SECONDS = 15
 MAX_TELEGRAM_RATE_LIMIT_RETRIES = 3
@@ -63,6 +87,41 @@ MAX_DELIVERY_ATTEMPTS = 5
 STALE_DELIVERY_MINUTES = 30
 CLOSE_AFTER_SUCCESSFUL_MISSES = 3
 DRY_RUN = False
+
+
+def is_quiet_hours(now: datetime.datetime | None = None) -> bool:
+    """Return whether a timestamp falls inside the configured local quiet window."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    local_hour = now.astimezone(DELIVERY_TIMEZONE).hour
+    if QUIET_HOURS_START == QUIET_HOURS_END:
+        return False
+    if QUIET_HOURS_START < QUIET_HOURS_END:
+        return QUIET_HOURS_START <= local_hour < QUIET_HOURS_END
+    return local_hour >= QUIET_HOURS_START or local_hour < QUIET_HOURS_END
+
+
+def delivery_policy_for_time(
+    now: datetime.datetime | None = None,
+) -> tuple[str, datetime.datetime]:
+    """Choose immediate delivery or the next local quiet-hours endpoint."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    if not is_quiet_hours(now):
+        return "immediate", now
+
+    local_now = now.astimezone(DELIVERY_TIMEZONE)
+    due_date = local_now.date()
+    if QUIET_HOURS_START > QUIET_HOURS_END and local_now.hour >= QUIET_HOURS_START:
+        due_date += datetime.timedelta(days=1)
+    due_local = datetime.datetime.combine(
+        due_date,
+        datetime.time(hour=QUIET_HOURS_END),
+        tzinfo=DELIVERY_TIMEZONE,
+    )
+    return "digest", due_local.astimezone(datetime.timezone.utc)
 
 
 @dataclass
@@ -147,7 +206,8 @@ def init_db():
             last_attempt_at TIMESTAMP,
             next_attempt_at TIMESTAMP,
             sent_at TIMESTAMP,
-            last_error TEXT
+            last_error TEXT,
+            delivery_mode TEXT NOT NULL DEFAULT 'immediate'
         );
     """)
     migrations = [
@@ -159,12 +219,13 @@ def init_db():
         "ALTER TABLE seen_jobs ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMP",
         "ALTER TABLE seen_jobs ADD COLUMN IF NOT EXISTS sent_at TIMESTAMP",
         "ALTER TABLE seen_jobs ADD COLUMN IF NOT EXISTS last_error TEXT",
+        "ALTER TABLE seen_jobs ADD COLUMN IF NOT EXISTS delivery_mode TEXT NOT NULL DEFAULT 'immediate'",
     ]
     for migration in migrations:
         cur.execute(migration)
     cur.execute("""
-        CREATE INDEX IF NOT EXISTS seen_jobs_delivery_queue_idx
-        ON seen_jobs (delivery_status, next_attempt_at);
+        CREATE INDEX IF NOT EXISTS seen_jobs_delivery_mode_queue_idx
+        ON seen_jobs (delivery_mode, delivery_status, next_attempt_at);
     """)
     cur.execute("""
         CREATE INDEX IF NOT EXISTS seen_jobs_recent_dedupe_idx
@@ -303,6 +364,13 @@ def build_telegram_message(job: dict) -> str:
         f"<b>{_message_value(job.get('company') or 'Unknown Company', 180)}</b>",
         _message_value(job.get("title") or "Untitled Role", 300),
         "",
+        (
+            "🏷 <b>Categories:</b> "
+            + " ".join(
+                f"[{_message_value(category, 20)}]"
+                for category in (job.get("categories") or ["TECH"])
+            )
+        ),
         f"📍 <b>Location:</b> {_message_value(_format_location(job.get('location')), 250)}",
         (
             "🎓 <b>Eligibility:</b> "
@@ -335,11 +403,8 @@ def build_telegram_message(job: dict) -> str:
     return message
 
 
-def send_telegram_alert(job) -> DeliveryResult:
-    msg = build_telegram_message(job)
-    
+def send_telegram_message(message: str) -> DeliveryResult:
     # Check if credentials exist before trying to send
-    import os
     bot_token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     
@@ -351,7 +416,7 @@ def send_telegram_alert(job) -> DeliveryResult:
     tg_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
         "chat_id": chat_id,
-        "text": msg,
+        "text": message,
         "parse_mode": "HTML",
         "link_preview_options": {"is_disabled": True},
     }
@@ -382,6 +447,10 @@ def send_telegram_alert(job) -> DeliveryResult:
     except requests.RequestException as e:
         print(f"❌ TELEGRAM CONNECTION FAILED: {e}")
         return DeliveryResult(False, str(e))
+
+
+def send_telegram_alert(job) -> DeliveryResult:
+    return send_telegram_message(build_telegram_message(job))
 
 
 def make_dedupe_key(job: dict) -> str:
@@ -420,6 +489,7 @@ def normalize_job_payload(job: dict) -> dict:
         payload["company"] = "Unknown Company"
     if not payload.get("title"):
         payload["title"] = "Untitled Role"
+    payload["categories"] = classify_job_categories(payload)
     return payload
 
 
@@ -432,6 +502,8 @@ def enqueue_job(
     bypass_recent_dedupe: bool = False,
     commit: bool = True,
     count_match: bool = True,
+    delivery_mode: str | None = None,
+    now: datetime.datetime | None = None,
 ) -> bool:
     """Persist a candidate for delivery, or print it during dry-run."""
     job = normalize_job_payload(job)
@@ -443,6 +515,12 @@ def enqueue_job(
         return True
 
     dedupe_key = make_dedupe_key(job)
+    scheduled_mode, due_at = delivery_policy_for_time(now)
+    delivery_mode = delivery_mode or scheduled_mode
+    if delivery_mode not in {"immediate", "digest"}:
+        raise ValueError("delivery_mode must be 'immediate' or 'digest'")
+    if delivery_mode == "immediate":
+        due_at = now or datetime.datetime.now(datetime.timezone.utc)
     cur = conn.cursor()
     try:
         if not bypass_recent_dedupe:
@@ -465,9 +543,9 @@ def enqueue_job(
             """
             INSERT INTO seen_jobs (
                 job_id, company, title, site, payload, dedupe_key,
-                delivery_status, attempt_count, next_attempt_at
+                delivery_status, attempt_count, next_attempt_at, delivery_mode
             )
-            VALUES (%s, %s, %s, %s, %s, %s, 'pending', 0, CURRENT_TIMESTAMP)
+            VALUES (%s, %s, %s, %s, %s, %s, 'pending', 0, %s, %s)
             ON CONFLICT (job_id) DO NOTHING
             RETURNING job_id
             """,
@@ -478,6 +556,8 @@ def enqueue_job(
                 job.get("site"),
                 Json(job, dumps=json.dumps),
                 dedupe_key,
+                due_at,
+                delivery_mode,
             ),
         )
         queued = cur.fetchone() is not None
@@ -505,6 +585,7 @@ def make_content_fingerprint(job: dict) -> str:
         "country": job.get("country"),
         "date_posted": job.get("date_posted"),
         "eligibility": job.get("eligibility"),
+        "categories": job.get("categories"),
     }
     encoded = json.dumps(json_safe(material), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode()).hexdigest()
@@ -557,6 +638,9 @@ def observe_job(
         return LifecycleOutcome("excluded")
 
     stats.matched += 1
+    job = dict(job)
+    if is_known_quant_company(job.get("company")):
+        job["source_tags"] = list({*(job.get("source_tags") or []), "QUANT"})
     payload = normalize_job_payload(job)
     payload["source_id"] = source_id
     payload["eligibility"] = assessment.to_payload()
@@ -791,6 +875,7 @@ def claim_due_delivery(conn, only_job_id: str | None = None):
                 SELECT job_id
                 FROM seen_jobs
                 WHERE attempt_count < %s
+                  AND delivery_mode = 'immediate'
                   AND (%s IS NULL OR job_id = %s)
                   AND (
                       (delivery_status IN ('pending', 'failed')
@@ -829,6 +914,49 @@ def claim_due_delivery(conn, only_job_id: str | None = None):
         cur.close()
 
 
+def claim_due_digest(conn, limit: int = DIGEST_MAX_JOBS) -> list[tuple]:
+    """Atomically claim one bounded batch of due digest rows."""
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            WITH candidates AS (
+                SELECT job_id
+                FROM seen_jobs
+                WHERE attempt_count < %s
+                  AND delivery_mode = 'digest'
+                  AND (
+                      (delivery_status IN ('pending', 'failed')
+                       AND COALESCE(next_attempt_at, CURRENT_TIMESTAMP) <= CURRENT_TIMESTAMP)
+                      OR
+                      (delivery_status = 'sending'
+                       AND last_attempt_at < CURRENT_TIMESTAMP - (%s * INTERVAL '1 minute'))
+                  )
+                ORDER BY created_at
+                FOR UPDATE SKIP LOCKED
+                LIMIT %s
+            )
+            UPDATE seen_jobs AS jobs
+            SET delivery_status = 'sending',
+                attempt_count = jobs.attempt_count + 1,
+                last_attempt_at = CURRENT_TIMESTAMP,
+                last_error = NULL
+            FROM candidates
+            WHERE jobs.job_id = candidates.job_id
+            RETURNING jobs.job_id, jobs.payload, jobs.attempt_count, jobs.created_at
+            """,
+            (MAX_DELIVERY_ATTEMPTS, STALE_DELIVERY_MINUTES, limit),
+        )
+        claimed = list(cur.fetchall())
+        conn.commit()
+        return sorted(claimed, key=lambda row: (row[3], row[0]))
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+
+
 def complete_delivery(conn, job_id: str) -> None:
     cur = conn.cursor()
     try:
@@ -844,6 +972,30 @@ def complete_delivery(conn, job_id: str) -> None:
             (job_id,),
         )
         conn.commit()
+    finally:
+        cur.close()
+
+
+def complete_deliveries(conn, job_ids: list[str]) -> None:
+    if not job_ids:
+        return
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE seen_jobs
+            SET delivery_status = 'sent',
+                sent_at = CURRENT_TIMESTAMP,
+                next_attempt_at = NULL,
+                last_error = NULL
+            WHERE job_id = ANY(%s::text[])
+            """,
+            (job_ids,),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         cur.close()
 
@@ -878,6 +1030,69 @@ def fail_delivery(
         cur.close()
 
 
+def build_digest_message(jobs: list[dict]) -> str:
+    """Render each job once under its first ordered category."""
+    grouped = {category: [] for category in CATEGORY_ORDER}
+    for job in jobs:
+        grouped[primary_category(job)].append(job)
+
+    lines = [
+        "🌙 <b>OVERNIGHT INTERNSHIP DIGEST</b>",
+        "",
+        f"{len(jobs)} new role{'s' if len(jobs) != 1 else ''} found during quiet hours.",
+    ]
+    item_number = 0
+    for category in CATEGORY_ORDER:
+        category_jobs = grouped[category]
+        if not category_jobs:
+            continue
+        lines.extend(["", f"<b>{_message_value(category, 20)}</b>"])
+        for job in category_jobs:
+            item_number += 1
+            categories = " ".join(
+                f"[{_message_value(tag, 20)}]"
+                for tag in (job.get("categories") or ["TECH"])
+            )
+            reopened = "🔁 " if job.get("lifecycle_event") == "reopened" else ""
+            url = html.escape(str(job.get("job_url") or "#")[:1000], quote=True)
+            lines.extend([
+                (
+                    f"{item_number}. {reopened}<b>"
+                    f"{_message_value(job.get('company') or 'Unknown Company', 80)}</b>"
+                ),
+                _message_value(job.get("title") or "Untitled Role", 140),
+                (
+                    f"{categories} · "
+                    f"{_message_value(_format_location(job.get('location')), 80)}"
+                ),
+                f'<a href="{url}">View and apply</a>',
+            ])
+
+    message = "\n".join(lines)
+    if len(BeautifulSoup(message, "html.parser").get_text()) > 3500:
+        raise ValueError("Telegram digest exceeds the 3500-character safety limit")
+    return message
+
+
+def _send_with_rate_limit(send, label: str) -> DeliveryResult:
+    result = send()
+    rate_limit_retries = 0
+    while (
+        not result.success
+        and result.retry_after_seconds is not None
+        and rate_limit_retries < MAX_TELEGRAM_RATE_LIMIT_RETRIES
+    ):
+        wait_seconds = result.retry_after_seconds + TELEGRAM_RETRY_BUFFER_SECONDS
+        rate_limit_retries += 1
+        print(
+            f"⏳ Telegram rate limit for {label}; waiting {wait_seconds}s before "
+            f"retry {rate_limit_retries}/{MAX_TELEGRAM_RATE_LIMIT_RETRIES}."
+        )
+        time.sleep(wait_seconds)
+        result = send()
+    return result
+
+
 def deliver_pending_jobs(only_job_id: str | None = None) -> int:
     """Deliver all currently due jobs and return the number of failures."""
     if DRY_RUN:
@@ -886,30 +1101,40 @@ def deliver_pending_jobs(only_job_id: str | None = None) -> int:
     failures = 0
     conn = get_db_connection()
     try:
+        if only_job_id is None:
+            while True:
+                digest_rows = claim_due_digest(conn)
+                if not digest_rows:
+                    break
+                job_ids = [row[0] for row in digest_rows]
+                payloads = [row[1] for row in digest_rows]
+                result = _send_with_rate_limit(
+                    lambda: send_telegram_message(build_digest_message(payloads)),
+                    f"digest ({len(job_ids)} jobs)",
+                )
+                if result.success:
+                    complete_deliveries(conn, job_ids)
+                    continue
+                failures += len(digest_rows)
+                for job_id, _payload, attempt_count, _created_at in digest_rows:
+                    status = fail_delivery(
+                        conn,
+                        job_id,
+                        attempt_count,
+                        result.error or "Unknown Telegram digest failure",
+                    )
+                    print(f"⚠️ Digest delivery {job_id} marked {status}.")
+
         while True:
             claimed = claim_due_delivery(conn, only_job_id=only_job_id)
             if claimed is None:
                 break
 
             job_id, payload, attempt_count = claimed
-            result = send_telegram_alert(payload)
-            rate_limit_retries = 0
-            while (
-                not result.success
-                and result.retry_after_seconds is not None
-                and rate_limit_retries < MAX_TELEGRAM_RATE_LIMIT_RETRIES
-            ):
-                wait_seconds = (
-                    result.retry_after_seconds + TELEGRAM_RETRY_BUFFER_SECONDS
-                )
-                rate_limit_retries += 1
-                print(
-                    f"⏳ Telegram rate limit for {job_id}; waiting "
-                    f"{wait_seconds}s before retry "
-                    f"{rate_limit_retries}/{MAX_TELEGRAM_RATE_LIMIT_RETRIES}."
-                )
-                time.sleep(wait_seconds)
-                result = send_telegram_alert(payload)
+            result = _send_with_rate_limit(
+                lambda: send_telegram_alert(payload),
+                job_id,
+            )
             if result.success:
                 complete_delivery(conn, job_id)
             else:
@@ -1039,6 +1264,29 @@ def normalize_company_name(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", name.lower())
 
 
+@lru_cache(maxsize=1)
+def _known_quant_company_names() -> tuple[str, ...]:
+    return tuple(
+        normalize_company_name(source["company"])
+        for source in load_source_registry()
+        if "QUANT" in source.get("tags", [])
+    )
+
+
+def is_known_quant_company(company: object) -> bool:
+    normalized = normalize_company_name(str(company or ""))
+    if not normalized:
+        return False
+    for known in _known_quant_company_names():
+        if normalized == known:
+            return True
+        if min(len(normalized), len(known)) >= 5 and (
+            normalized in known or known in normalized
+        ):
+            return True
+    return False
+
+
 def parse_quant_firms(markdown: str) -> set[str]:
     """Extract normalized firm names from the quant internship index."""
     firm_names = re.findall(
@@ -1108,6 +1356,7 @@ def find_recent_singapore_quant_jobs(
             "job_url": job["job_url"],
             "date_posted": job["date_added"],
             "location": "Singapore",
+            "source_tags": ["QUANT"],
         }
         if is_quant_intern_role(job_data["title"]) and is_singapore_job(job_data):
             matching_jobs.append(job_data)
@@ -1507,7 +1756,13 @@ def run_canary() -> int:
     stats = PipelineStats("System Canary")
     conn = get_db_connection()
     try:
-        if not enqueue_job(conn, canary_id, canary_job, stats):
+        if not enqueue_job(
+            conn,
+            canary_id,
+            canary_job,
+            stats,
+            delivery_mode="immediate",
+        ):
             print("❌ Canary could not be queued.")
             return 1
     finally:

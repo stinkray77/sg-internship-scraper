@@ -17,6 +17,21 @@ def response_with_json(value, status_code=200):
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_quiet_hour_boundaries_use_singapore_time(self):
+        singapore = main.DELIVERY_TIMEZONE
+        before_end = datetime.datetime(2026, 7, 20, 7, 59, tzinfo=singapore)
+        at_end = datetime.datetime(2026, 7, 20, 8, 0, tzinfo=singapore)
+        midnight = datetime.datetime(2026, 7, 20, 0, 0, tzinfo=singapore)
+        before_start = datetime.datetime(2026, 7, 19, 23, 59, tzinfo=singapore)
+
+        self.assertTrue(main.is_quiet_hours(before_end))
+        self.assertFalse(main.is_quiet_hours(at_end))
+        self.assertTrue(main.is_quiet_hours(midnight))
+        self.assertFalse(main.is_quiet_hours(before_start))
+        mode, due_at = main.delivery_policy_for_time(before_end)
+        self.assertEqual(mode, "digest")
+        self.assertEqual(due_at.astimezone(singapore).hour, 8)
+
     def test_telegram_success_uses_escaped_html(self):
         response = response_with_json({}, status_code=200)
         with (
@@ -133,6 +148,27 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn("ON CONFLICT (job_id) DO NOTHING", insert_sql)
         conn.commit.assert_called_once()
 
+    def test_enqueue_during_quiet_hours_persists_digest_mode_and_due_time(self):
+        conn = MagicMock()
+        cursor = conn.cursor.return_value
+        cursor.fetchone.side_effect = [None, ("source_1",)]
+        stats = main.PipelineStats("test")
+        singapore = main.DELIVERY_TIMEZONE
+        now = datetime.datetime(2026, 7, 20, 1, 30, tzinfo=singapore)
+
+        with patch("main.DRY_RUN", False):
+            main.enqueue_job(
+                conn,
+                "source_1",
+                {"company": "Example", "title": "Software Intern"},
+                stats,
+                now=now,
+            )
+
+        params = cursor.execute.call_args_list[1].args[1]
+        self.assertEqual(params[-1], "digest")
+        self.assertEqual(params[-2].astimezone(singapore).hour, 8)
+
     def test_enqueue_normalizes_pandas_values_for_json(self):
         conn = MagicMock()
         cursor = conn.cursor.return_value
@@ -165,7 +201,58 @@ class DeliveryTests(unittest.TestCase):
 
         self.assertEqual(claimed[0], "job_1")
         self.assertIn("FOR UPDATE SKIP LOCKED", cursor.execute.call_args.args[0])
+        self.assertIn("delivery_mode = 'immediate'", cursor.execute.call_args.args[0])
         conn.commit.assert_called_once()
+
+    def test_digest_claim_is_bounded_and_isolated(self):
+        conn = MagicMock()
+        conn.cursor.return_value.fetchall.return_value = []
+
+        main.claim_due_digest(conn, limit=8)
+
+        sql, params = conn.cursor.return_value.execute.call_args.args
+        self.assertIn("delivery_mode = 'digest'", sql)
+        self.assertIn("FOR UPDATE SKIP LOCKED", sql)
+        self.assertEqual(params[-1], 8)
+
+    def test_digest_message_groups_once_and_shows_all_tags(self):
+        message = main.build_digest_message([
+            {
+                "company": "Quant & Co",
+                "title": "Quant Software Engineer Intern",
+                "location": "Singapore",
+                "categories": ["QUANT", "SWE"],
+                "job_url": "https://example.com/quant?a=1&b=2",
+            },
+            {
+                "company": "Data Co",
+                "title": "Data Engineer Intern",
+                "location": "Singapore",
+                "categories": ["DATA"],
+                "job_url": "https://example.com/data",
+            },
+        ])
+
+        self.assertLess(message.index("<b>QUANT</b>"), message.index("<b>DATA</b>"))
+        self.assertEqual(message.count("Quant &amp; Co"), 1)
+        self.assertIn("[QUANT] [SWE]", message)
+        self.assertIn("a=1&amp;b=2", message)
+
+    def test_eight_job_digest_stays_below_telegram_safety_limit(self):
+        jobs = [{
+            "company": "Company " + "x" * 200,
+            "title": "Software Engineer Intern " + "y" * 400,
+            "location": "Singapore " + "z" * 200,
+            "categories": ["SWE"],
+            "job_url": f"https://example.com/{index}",
+        } for index in range(8)]
+
+        message = main.build_digest_message(jobs)
+
+        self.assertLessEqual(
+            len(main.BeautifulSoup(message, "html.parser").get_text()),
+            3500,
+        )
 
     def test_claim_can_be_restricted_to_one_job(self):
         conn = MagicMock()
@@ -210,6 +297,52 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(failures, 0)
         complete.assert_called_once_with(conn, "job_1")
         conn.close.assert_called_once()
+
+    def test_digest_delivery_marks_the_whole_batch_sent(self):
+        conn = MagicMock()
+        created_at = datetime.datetime(2026, 7, 20)
+        rows = [
+            ("job_1", {"title": "Software Intern"}, 1, created_at),
+            ("job_2", {"title": "Data Intern"}, 1, created_at),
+        ]
+        with (
+            patch("main.DRY_RUN", False),
+            patch("main.get_db_connection", return_value=conn),
+            patch("main.claim_due_digest", side_effect=[rows, []]),
+            patch("main.claim_due_delivery", return_value=None),
+            patch(
+                "main.send_telegram_message",
+                return_value=main.DeliveryResult(True),
+            ),
+            patch("main.complete_deliveries") as complete,
+        ):
+            failures = main.deliver_pending_jobs()
+
+        self.assertEqual(failures, 0)
+        complete.assert_called_once_with(conn, ["job_1", "job_2"])
+
+    def test_digest_failure_requeues_every_row(self):
+        conn = MagicMock()
+        created_at = datetime.datetime(2026, 7, 20)
+        rows = [
+            ("job_1", {"title": "Software Intern"}, 1, created_at),
+            ("job_2", {"title": "Data Intern"}, 2, created_at),
+        ]
+        with (
+            patch("main.DRY_RUN", False),
+            patch("main.get_db_connection", return_value=conn),
+            patch("main.claim_due_digest", side_effect=[rows, []]),
+            patch("main.claim_due_delivery", return_value=None),
+            patch(
+                "main.send_telegram_message",
+                return_value=main.DeliveryResult(False, "failed"),
+            ),
+            patch("main.fail_delivery", return_value="failed") as fail,
+        ):
+            failures = main.deliver_pending_jobs()
+
+        self.assertEqual(failures, 2)
+        self.assertEqual(fail.call_count, 2)
 
     def test_delivery_loop_waits_and_retries_rate_limited_row(self):
         conn = MagicMock()
@@ -258,6 +391,7 @@ class DeliveryTests(unittest.TestCase):
             enqueue.call_args.args[2]["message_type"],
             "canary",
         )
+        self.assertEqual(enqueue.call_args.kwargs["delivery_mode"], "immediate")
         deliver.assert_called_once_with(only_job_id=canary_id)
 
     def test_main_canary_skips_scrapers(self):

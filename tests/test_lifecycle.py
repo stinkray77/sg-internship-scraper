@@ -23,6 +23,14 @@ def sample_job(**overrides):
 
 
 class LifecycleTests(unittest.TestCase):
+    def test_categories_change_the_content_fingerprint(self):
+        job = sample_job(categories=["SWE"])
+
+        self.assertNotEqual(
+            main.make_content_fingerprint(job),
+            main.make_content_fingerprint({**job, "categories": ["QUANT", "SWE"]}),
+        )
+
     def setUp(self):
         self.conn = MagicMock()
         self.cursor = self.conn.cursor.return_value
@@ -274,6 +282,7 @@ class MigrationTests(unittest.TestCase):
         )
         self.assertIn("CREATE TABLE IF NOT EXISTS job_observations", sql)
         self.assertIn("CREATE TABLE IF NOT EXISTS job_lifecycle_events", sql)
+        self.assertIn("delivery_mode TEXT NOT NULL DEFAULT 'immediate'", sql)
         self.assertIn("INSERT INTO job_observations", sql)
         self.assertIn("'backfilled'", sql)
         self.assertIn("system_canary_%", sql)

@@ -22,6 +22,7 @@ class JobCandidate:
     description: str = ""
     company_key: str | None = None
     source_label: str | None = None
+    source_tags: list[str] = field(default_factory=list)
 
     def to_payload(self) -> dict:
         return {
@@ -36,6 +37,7 @@ class JobCandidate:
             "date_posted": self.date_posted,
             "description": self.description,
             "source_label": self.source_label or self.source_id,
+            "source_tags": self.source_tags,
         }
 
 
@@ -94,6 +96,9 @@ def validate_source_registry(sources: list[dict]) -> None:
             raise ValueError(f"enabled must be boolean for {source_id}")
         if not isinstance(source["config"], dict):
             raise ValueError(f"config must be an object for {source_id}")
+        tags = source.get("tags", [])
+        if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
+            raise ValueError(f"tags must be a list of strings for {source_id}")
         lifecycle_mode = source.get("lifecycle_mode", "seen_only")
         if lifecycle_mode not in {"seen_only", "snapshot"}:
             raise ValueError(f"invalid lifecycle mode for {source_id}")
@@ -119,6 +124,7 @@ def _candidate(
         company=source["company"],
         company_key=source.get("dedupe_company") or source["company"],
         source_label=f"{source['company']} official careers",
+        source_tags=list(source.get("tags", [])),
         title=str(title or ""),
         job_url=str(job_url or source["config"].get("url", "")),
         **kwargs,
