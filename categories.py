@@ -10,8 +10,8 @@ _QUANT_ROLE = re.compile(
 )
 _AI_ML_ROLE = re.compile(
     r"\b(machine learning|artificial intelligence|generative ai|genai|deep learning|"
-    r"computer vision|natural language processing|nlp|large language model|llm|"
-    r"ml engineer|ai engineer|ai/ml)\b",
+    r"reinforcement learning|computer vision|natural language processing|nlp|"
+    r"large language model|llm|model efficiency|ml engineer|ai engineer|ai/ml)\b",
     re.IGNORECASE,
 )
 _DATA_ROLE = re.compile(
@@ -22,7 +22,9 @@ _DATA_ROLE = re.compile(
 _SWE_ROLE = re.compile(
     r"\b(software|swe|developer|development engineer|backend|back-end|frontend|front-end|"
     r"full[ -]?stack|platform engineer|infrastructure engineer|devops|site reliability|sre|"
-    r"security engineer|cloud engineer|systems engineer|programmer)\b",
+    r"security engineer|cybersecurity|cloud engineer|systems engineer|programmer|"
+    r"firmware|embedded|robotics|information systems?|enterprise architecture|"
+    r"solutions? architect|mobile engineer|web engineer)\b",
     re.IGNORECASE,
 )
 

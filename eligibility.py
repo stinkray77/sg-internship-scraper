@@ -11,6 +11,7 @@ class EligibilityAssessment:
     graduation_years: list[int] = field(default_factory=list)
     duration: str | None = None
     work_authorization: str | None = None
+    relocation_support: str | None = None
     reasons: list[str] = field(default_factory=list)
 
     def to_payload(self) -> dict:
@@ -20,6 +21,7 @@ class EligibilityAssessment:
             "graduation_years": self.graduation_years,
             "duration": self.duration,
             "work_authorization": self.work_authorization,
+            "relocation_support": self.relocation_support,
             "reasons": self.reasons,
         }
 
@@ -100,6 +102,26 @@ def _work_authorization(text: str) -> str | None:
     return None
 
 
+def _relocation_support(text: str) -> str | None:
+    if re.search(
+        r"\b(?:no|without)\s+relocation\s+(?:assistance|support)\b|"
+        r"\brelocation\s+(?:assistance|support)\s+(?:is\s+)?not\s+"
+        r"(?:available|provided|offered)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return "Relocation support not available"
+    if re.search(
+        r"\brelocation\s+(?:assistance|support|package)\s+"
+        r"(?:is\s+)?(?:available|provided|offered)\b|"
+        r"\b(?:provide|offer)\s+relocation\s+(?:assistance|support)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return "Relocation support available"
+    return None
+
+
 def assess_eligibility(title: object, description: object = "") -> EligibilityAssessment:
     title_text = description_text(title)
     body_text = description_text(description)
@@ -148,5 +170,6 @@ def assess_eligibility(title: object, description: object = "") -> EligibilityAs
         graduation_years=_graduation_years(combined),
         duration=_duration(combined),
         work_authorization=_work_authorization(combined),
+        relocation_support=_relocation_support(combined),
         reasons=reasons,
     )

@@ -1,16 +1,17 @@
 # sg-internship-scraper
 
-Hourly Singapore internship scraper that finds CS, software engineering, data, AI/ML, and quant internship roles, deduplicates them in PostgreSQL, and sends new matches to Telegram.
+Twice-hourly Singapore internship scraper that finds CS, software engineering, data, AI/ML, and quant internship roles, deduplicates them in PostgreSQL, and sends new matches to Telegram.
 
 ## What It Scrapes
 
 The scraper combines broad discovery with configurable official sources:
 
-- JobSpy broad search over LinkedIn, Indeed, and Glassdoor
+- Three focused JobSpy searches over LinkedIn, Indeed, and Glassdoor
 - InternSG IT internship listings
 - Greenhouse, Lever, SmartRecruiters, Workday, and Ashby company boards
 - Public career pages for selected finance and trading employers
-- A recent-job intersection between the Northwestern FinTech quant internship index and the verified Singapore internship index
+- The complete verified Singapore technology internship index
+- Active global technical roles from the Northwestern FinTech quant internship index
 
 Company sources are declared in `sources.json`. Each entry specifies the employer,
 adapter, public board configuration, aliases, and whether direct scraping is enabled.
@@ -27,8 +28,8 @@ that block free HTTP access or require a JavaScript browser are marked
 1. Load environment variables from `.env` or GitHub Actions secrets.
 2. Create or migrate the delivery and lifecycle tables.
 3. Fetch official sources with at most four workers, then process database writes sequentially.
-4. Filter technical student roles, require an explicit Singapore location, and
-   classify description-based eligibility.
+4. Filter technical student roles, merge cross-site duplicates, and classify
+   description-based eligibility.
 5. Record each job observation and lifecycle event in PostgreSQL.
 6. Atomically enqueue only new or reopened jobs for Telegram delivery.
 7. Reconcile complete official ATS snapshots and close jobs after three clean misses.
@@ -44,14 +45,25 @@ roles are rejected, while inclusive bachelor/master/PhD postings remain eligible
 Graduation years, internship duration, and work-authorization language are
 extracted for display but do not hide a job.
 
-Location filtering is fail-closed: a posting must explicitly contain `Singapore` or the country code `SG`. Singapore-anchored onsite, hybrid, and remote roles are accepted. Generic remote, APAC, worldwide, and missing locations are rejected.
+Location filtering accepts explicit `Singapore` or `SG` metadata. A blank or
+generic location returned by a Singapore-scoped JobSpy query is retained as
+`[Inference] Singapore, from search scope`; an explicitly foreign non-quant
+location is rejected. Technical student roles from known quant sources are
+eligible globally. Visa sponsorship and relocation support are reported only
+when the posting states them.
 
-The quant index pipeline uses one repository to identify quant firms and a separate Singapore-specific repository to identify verified local postings. Only matching target-role internships added in the last 14 days are considered. Official application links from the Singapore index are retained, and recent exact company-title matches are suppressed across sources.
+The Singapore index is trusted for its declared technology, internship, and
+location scope, while explicit postgraduate-only roles remain excluded. The
+global quant index supplies current application links and firm-level locations;
+those locations are labeled unverified. Company aliases and containment matching
+handle variants such as Tower Research Capital and QRT.
 
 Official open postings are not discarded based on age. On first enabling a board,
 each current match alerts once, after which PostgreSQL deduplication suppresses it.
-JobSpy retains a 72-hour overlap window and requests 50 results per site by
-default. Paginated adapters enforce finite page limits.
+JobSpy retains a 72-hour overlap window and requests 50 results per site and
+query shard by default. It merges duplicate copies before filtering and prefers
+direct employer URLs and explicit location metadata. Paginated adapters enforce
+finite page limits.
 
 Official sources run before aggregators so cross-source deduplication retains the
 official application URL when both sources find the same company and title.
@@ -125,10 +137,10 @@ other pending alerts.
 
 ## GitHub Actions
 
-The workflow in `.github/workflows/scraper.yml` runs tests and then runs the scraper hourly:
+The workflow in `.github/workflows/scraper.yml` runs tests and then runs the scraper twice per hour, at minutes 17 and 47:
 
 ```yaml
-cron: '17 * * * *'
+cron: '17,47 * * * *'
 ```
 
 It can also be run manually from the GitHub Actions UI through
@@ -211,16 +223,23 @@ registry sources explicitly marked `lifecycle_mode: snapshot` can close jobs.
 Limited-window and bespoke sources update their last-seen state but never infer
 that a missing job has closed.
 
+`source_sync_state` tracks coverage versions for newly enabled indexes and global
+quant sources. Their first complete fetch is stored silently, preventing a large
+one-time alert burst. Later additions and reopenings alert normally.
+
 ## Current Limitations
 
 - Eligibility descriptions use conservative deterministic parsing. Ambiguous
   requirements remain `unknown` rather than being rejected.
 - Sources without a usable description remain eligible with an unknown verdict.
 - Location accuracy depends on metadata supplied by each job source.
+- Global quant index locations describe the firm and may not identify the exact
+  office for every linked role; Telegram labels them as unverified.
 - GitHub indexes are discovery sources and may still lag official company career pages.
 - Some scrapers depend on external HTML or third-party APIs that may change.
 - Bespoke sources without stable free HTTP access fall back to discovery sources rather than CAPTCHA bypasses, paid proxies, or browser automation.
-- JobSpy controls some network behavior internally, outside the shared HTTP retry client.
+- JobSpy controls some network behavior internally, outside the shared HTTP retry
+  client. Partial site failures and saturated query shards are reported as warnings.
 - Telegram has no idempotency key. Retrying an ambiguous timeout prioritizes not losing an alert, but can rarely produce a duplicate.
 
 ## Main Entry Point

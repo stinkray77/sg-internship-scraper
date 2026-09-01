@@ -75,6 +75,12 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "tags must be"):
             validate_source_registry([invalid])
 
+    def test_registry_rejects_non_string_aliases(self):
+        invalid = source("greenhouse", token="test")
+        invalid["aliases"] = ["Alias", 1]
+        with self.assertRaisesRegex(ValueError, "aliases must be"):
+            validate_source_registry([invalid])
+
 
 class StandardAdapterTests(unittest.TestCase):
     def test_greenhouse_normalizes_job(self):

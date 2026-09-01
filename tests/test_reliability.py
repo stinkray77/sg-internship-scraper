@@ -97,6 +97,19 @@ class DeliveryTests(unittest.TestCase):
         self.assertNotIn("<b>Degree:</b>", message)
         self.assertNotIn("<b>Graduation:</b>", message)
 
+    def test_overseas_quant_card_does_not_imply_visa_or_relocation(self):
+        message = main.build_telegram_message({
+            "company": "Example Quant",
+            "title": "Quantitative Developer Intern",
+            "location": "London",
+            "job_url": "https://example.com",
+            "is_overseas_quant": True,
+            "eligibility": {"verdict": "unknown"},
+        })
+
+        self.assertIn("Work rights:</b> Not stated; verify posting", message)
+        self.assertIn("Relocation:</b> Not stated; verify posting", message)
+
     def test_telegram_timeout_is_a_failed_result(self):
         with (
             patch("main.os.getenv", side_effect=lambda name: "value"),
@@ -144,9 +157,25 @@ class DeliveryTests(unittest.TestCase):
 
         self.assertTrue(queued)
         self.assertEqual(stats.queued, 1)
+        dedupe_sql = cursor.execute.call_args_list[0].args[0]
+        self.assertIn("payload->>'job_url'", dedupe_sql)
         insert_sql = cursor.execute.call_args_list[1].args[0]
         self.assertIn("ON CONFLICT (job_id) DO NOTHING", insert_sql)
         conn.commit.assert_called_once()
+
+    def test_overseas_quant_dedupe_keeps_distinct_offices(self):
+        london = {
+            "company": "Example Quant",
+            "title": "Software Engineer Intern",
+            "location": "London",
+            "is_overseas_quant": True,
+        }
+        new_york = {**london, "location": "New York"}
+
+        self.assertNotEqual(
+            main.make_dedupe_key(london),
+            main.make_dedupe_key(new_york),
+        )
 
     def test_enqueue_during_quiet_hours_persists_digest_mode_and_due_time(self):
         conn = MagicMock()
@@ -459,6 +488,33 @@ class DeliveryTests(unittest.TestCase):
 
 
 class PaginationTests(unittest.TestCase):
+    def test_jobspy_merges_bunge_duplicates_and_prefers_singapore_direct_url(self):
+        linkedin = pd.DataFrame([{
+            "id": "li-1",
+            "site": "linkedin",
+            "title": "Quantitative Trading Developer (Internship)",
+            "company": "Bunge",
+            "location": "",
+            "job_url": "https://linkedin.example/job/1",
+            "job_url_direct": None,
+        }])
+        indeed = pd.DataFrame([{
+            "id": "in-1",
+            "site": "indeed",
+            "title": "Quantitative Trading Developer (Internship)",
+            "company": "Bunge",
+            "location": "SG",
+            "job_url": "https://indeed.example/job/1",
+            "job_url_direct": "https://jobs.bunge.com/job/47243?utm_source=indeed",
+        }])
+
+        jobs = main.merge_jobspy_results([linkedin, indeed])
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["location"], "SG")
+        self.assertEqual(jobs[0]["job_url"], "https://jobs.bunge.com/job/47243")
+        self.assertEqual(jobs[0]["discovery_sites"], ["indeed", "linkedin"])
+
     def test_jobspy_uses_overlap_and_result_limit(self):
         jobs = pd.DataFrame([{
             "id": "1",
@@ -477,6 +533,24 @@ class PaginationTests(unittest.TestCase):
         self.assertEqual(scrape.call_args.kwargs["hours_old"], 72)
         self.assertEqual(scrape.call_args.kwargs["results_wanted"], 50)
         self.assertEqual(stats.queued, 1)
+
+    def test_jobspy_accepts_missing_location_as_explicitly_inferred(self):
+        jobs = pd.DataFrame([{
+            "id": "1",
+            "site": "linkedin",
+            "title": "Software Engineer Intern",
+            "company": "Example",
+            "location": None,
+            "job_url": "https://example.com/job",
+        }])
+        with (
+            patch("main.DRY_RUN", True),
+            patch("main.scrape_jobs", return_value=jobs),
+        ):
+            stats = main.run_pipeline()
+
+        self.assertEqual(stats.queued, 1)
+        self.assertEqual(stats.inferred_location, 1)
 
     def test_internsg_follows_next_page(self):
         date_text = datetime.date.today().strftime("%d %b")

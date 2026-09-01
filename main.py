@@ -4,6 +4,7 @@ import datetime
 import hashlib
 import html
 import json
+import logging
 import requests
 import re
 import sys
@@ -18,7 +19,7 @@ import pandas as pd
 from psycopg2.extras import Json
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from urllib.parse import urljoin
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from jobspy import scrape_jobs
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
@@ -42,6 +43,15 @@ SINGAPORE_INTERNSHIP_INDEX_URL = (
     "https://raw.githubusercontent.com/didtheyghostme/"
     "Singapore-Summer2026-TechInternships/main/README.md"
 )
+JOB_SEARCH_SHARDS = (
+    "(software OR developer OR backend OR frontend OR fullstack OR firmware OR systems) AND (intern OR internship)",
+    "(data OR AI OR machine learning OR reinforcement learning OR security OR cloud OR infrastructure) AND (intern OR internship)",
+    "(quant OR quantitative OR trading OR trader OR technology OR IT) AND (intern OR internship)",
+)
+JOBSPY_SITES = ("linkedin", "indeed", "glassdoor")
+SINGAPORE_INDEX_SOURCE_ID = "sg_tech_index"
+GLOBAL_QUANT_INDEX_SOURCE_ID = "global_quant_index"
+SOURCE_COVERAGE_VERSION = 1
 QUANT_JOB_MAX_AGE_DAYS = 14
 
 
@@ -138,6 +148,10 @@ class PipelineStats:
     matched: int = 0
     queued: int = 0
     duplicates: int = 0
+    filtered_role: int = 0
+    filtered_location: int = 0
+    filtered_eligibility: int = 0
+    inferred_location: int = 0
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
@@ -232,6 +246,10 @@ def init_db():
         ON seen_jobs (dedupe_key, created_at);
     """)
     cur.execute("""
+        CREATE INDEX IF NOT EXISTS seen_jobs_recent_url_idx
+        ON seen_jobs ((payload->>'job_url'), created_at);
+    """)
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS job_observations (
             observation_id TEXT PRIMARY KEY,
             source_id TEXT NOT NULL,
@@ -262,6 +280,14 @@ def init_db():
             before_payload JSONB,
             after_payload JSONB,
             UNIQUE (observation_id, event_version, event_type)
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS source_sync_state (
+            scope_id TEXT PRIMARY KEY,
+            coverage_version INTEGER NOT NULL,
+            last_success_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_fetched_count INTEGER NOT NULL DEFAULT 0
         );
     """)
     cur.execute("""
@@ -382,10 +408,16 @@ def build_telegram_message(job: dict) -> str:
         ("Graduation", ", ".join(str(year) for year in eligibility.get("graduation_years") or [])),
         ("Duration", eligibility.get("duration")),
         ("Work rights", eligibility.get("work_authorization")),
+        ("Relocation", eligibility.get("relocation_support")),
     )
     for label, value in optional_eligibility:
         if value:
             lines.append(f"   • <b>{label}:</b> {_message_value(value, 250)}")
+    if job.get("is_overseas_quant"):
+        if not eligibility.get("work_authorization"):
+            lines.append("   • <b>Work rights:</b> Not stated; verify posting")
+        if not eligibility.get("relocation_support"):
+            lines.append("   • <b>Relocation:</b> Not stated; verify posting")
     lines.extend([
         "",
         f"📅 <b>Posted:</b> {_message_value(_format_message_date(job.get('date_posted')))}",
@@ -454,11 +486,20 @@ def send_telegram_alert(job) -> DeliveryResult:
 
 
 def make_dedupe_key(job: dict) -> str:
-    company = normalize_company_name(
+    company = canonical_company_name(
         str(job.get("company_key") or job.get("company", ""))
     )
     title = re.sub(r"[^a-z0-9]", "", str(job.get("title", "")).lower())
-    return hashlib.sha256(f"{company}:{title}".encode()).hexdigest()
+    location_scope = ""
+    if job.get("is_overseas_quant"):
+        location_scope = re.sub(
+            r"[^a-z0-9]",
+            "",
+            _format_location(job.get("location")).lower(),
+        )
+    return hashlib.sha256(
+        f"{company}:{title}:{location_scope}".encode()
+    ).hexdigest()
 
 
 def json_safe(value):
@@ -489,6 +530,8 @@ def normalize_job_payload(job: dict) -> dict:
         payload["company"] = "Unknown Company"
     if not payload.get("title"):
         payload["title"] = "Untitled Role"
+    if payload.get("job_url"):
+        payload["job_url"] = canonicalize_job_url(payload["job_url"])
     payload["categories"] = classify_job_categories(payload)
     return payload
 
@@ -528,12 +571,12 @@ def enqueue_job(
                 """
                 SELECT job_id
                 FROM seen_jobs
-                WHERE dedupe_key = %s
+                WHERE (dedupe_key = %s OR payload->>'job_url' = %s)
                   AND delivery_status IN ('pending', 'sending', 'failed', 'sent')
                   AND created_at >= CURRENT_TIMESTAMP - INTERVAL '30 days'
                 LIMIT 1
                 """,
-                (dedupe_key,),
+                (dedupe_key, job.get("job_url")),
             )
             if cur.fetchone() is not None:
                 stats.duplicates += 1
@@ -628,6 +671,8 @@ def observe_job(
     job: dict,
     stats: PipelineStats,
     assessment: EligibilityAssessment | None = None,
+    *,
+    baseline: bool = False,
 ) -> LifecycleOutcome:
     """Upsert lifecycle state and queue only new or reopened opportunities."""
     assessment = assessment or assess_eligibility(
@@ -648,6 +693,9 @@ def observe_job(
     fingerprint = make_content_fingerprint(payload)
 
     if DRY_RUN:
+        if baseline:
+            print(f"🧪 Would backfill silently: {payload['title']} at {payload['company']}")
+            return LifecycleOutcome("backfilled")
         queued = enqueue_job(
             conn,
             observation_id,
@@ -675,7 +723,7 @@ def observe_job(
         event_type = "unchanged"
 
         if existing is None:
-            version = 1
+            version = 0 if baseline else 1
             first_seen_at = now
             cur.execute(
                 """
@@ -707,7 +755,7 @@ def observe_job(
                     now,
                 ),
             )
-            event_type = "new"
+            event_type = "backfilled" if baseline else "new"
             _record_lifecycle_event(
                 cur, observation_id, event_type, version, None, payload, now
             )
@@ -770,7 +818,7 @@ def observe_job(
                     now,
                 )
 
-        if event_type in {"new", "reopened"}:
+        if event_type in {"new", "reopened"} and not baseline:
             delivery_id = observation_id
             if event_type == "reopened":
                 delivery_id = f"{observation_id}:reopened:{version}"
@@ -858,6 +906,57 @@ def reconcile_source_snapshot(
             closed.append(observation_id)
         conn.commit()
         return closed
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+
+
+def source_baseline_pending(
+    conn,
+    scope_id: str,
+    coverage_version: int = SOURCE_COVERAGE_VERSION,
+) -> bool:
+    """Return whether a newly expanded source still needs a silent baseline."""
+    if DRY_RUN:
+        return True
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT coverage_version FROM source_sync_state WHERE scope_id = %s",
+            (scope_id,),
+        )
+        row = cur.fetchone()
+        return row is None or row[0] < coverage_version
+    finally:
+        cur.close()
+
+
+def complete_source_baseline(
+    conn,
+    scope_id: str,
+    fetched_count: int,
+    coverage_version: int = SOURCE_COVERAGE_VERSION,
+) -> None:
+    if DRY_RUN:
+        return
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO source_sync_state (
+                scope_id, coverage_version, last_success_at, last_fetched_count
+            )
+            VALUES (%s, %s, CURRENT_TIMESTAMP, %s)
+            ON CONFLICT (scope_id) DO UPDATE
+            SET coverage_version = EXCLUDED.coverage_version,
+                last_success_at = EXCLUDED.last_success_at,
+                last_fetched_count = EXCLUDED.last_fetched_count
+            """,
+            (scope_id, coverage_version, fetched_count),
+        )
+        conn.commit()
     except Exception:
         conn.rollback()
         raise
@@ -1157,19 +1256,28 @@ def is_target_role(title: str) -> bool:
     """
     title_lower = str(title or "").lower()
     
-    blacklist_pattern = (
-        r"\b(hr|human resources|accounting|civil|mechanical|electrical|retail|"
-        r"design|product management|product manager|project management)\b"
-    )
-    if re.search(blacklist_pattern, title_lower):
-        return False
-
     strong_technical_pattern = (
         r"\b(software|swe|developer|programmer|machine learning|ml|backend|"
         r"frontend|fullstack|cloud|systems|platform|infrastructure|devops|"
-        r"security|computer vision|nlp|ai|genai|llm|blockchain)\b|"
+        r"security|cybersecurity|computer vision|nlp|ai|genai|llm|blockchain|"
+        r"reinforcement learning|robotics|firmware|embedded|database|automation|"
+        r"information systems?|information technology|business intelligence|"
+        r"enterprise architecture|solutions? architect|mobile|web|npu|gpu|"
+        r"research scientist|model efficiency|quality engineering)\b|"
         r"\bdata\s+(engineer|engineering|scientist|analyst)\b"
     )
+    has_strong_technical = bool(re.search(strong_technical_pattern, title_lower))
+
+    hard_blacklist_pattern = (
+        r"\b(hr|human resources|accounting|retail|product management|"
+        r"product manager|project management|graphic design|product design|"
+        r"industrial engineering|civil engineering|mechanical engineering|"
+        r"chemical engineering)\b"
+    )
+    if re.search(hard_blacklist_pattern, title_lower):
+        return False
+    if re.search(r"\belectrical\b", title_lower) and not has_strong_technical:
+        return False
     if re.search(r"\b(sales|marketing)\b", title_lower) and not re.search(
         strong_technical_pattern,
         title_lower,
@@ -1181,7 +1289,12 @@ def is_target_role(title: str) -> bool:
         r"quant|quantitative|trading|trader|algorithm|algorithmic|researcher|"
         r"data|ai|genai|llm|machine learning|ml|backend|frontend|fullstack|"
         r"cloud|systems|platform|infrastructure|devops|security|computer vision|"
-        r"nlp|blockchain|fintech)\b|\brisk\s+(model|modelling|modeling|analytics|"
+        r"cybersecurity|nlp|blockchain|fintech|reinforcement learning|robotics|"
+        r"firmware|embedded|database|automation|information systems?|"
+        r"information technology|business intelligence|enterprise architecture|"
+        r"solutions? architect|mobile|web|npu|gpu|research scientist|"
+        r"model efficiency|quality engineering)\b|"
+        r"\brisk\s+(model|modelling|modeling|analytics|"
         r"technology|engineering)\b"
     )
     has_target = bool(re.search(whitelist_pattern, title_lower))
@@ -1239,6 +1352,10 @@ SINGAPORE_LOCATION_PATTERN = re.compile(
     r"(?<![a-z0-9])(?:singapore|sg)(?![a-z0-9])",
     re.IGNORECASE,
 )
+GENERIC_LOCATION_PATTERN = re.compile(
+    r"^\s*(?:remote|hybrid|onsite|on-site|apac|asia(?: pacific)?|worldwide|global)\s*$",
+    re.IGNORECASE,
+)
 
 
 def _contains_singapore_location(value) -> bool:
@@ -1259,18 +1376,65 @@ def is_singapore_job(job: dict) -> bool:
     )
 
 
+def infer_singapore_from_search(job: dict) -> bool:
+    """Fill absent or generic metadata from an explicitly Singapore-scoped query."""
+    if is_singapore_job(job):
+        return False
+    values = [job.get("country"), job.get("location")]
+    flattened = []
+    for value in values:
+        if isinstance(value, (list, tuple, set)):
+            flattened.extend(str(item).strip() for item in value if item)
+        elif value:
+            flattened.append(str(value).strip())
+    if flattened and any(not GENERIC_LOCATION_PATTERN.fullmatch(value) for value in flattened):
+        return False
+    job["location"] = "[Inference] Singapore, from search scope"
+    job["location_inferred"] = True
+    return True
+
+
 def normalize_company_name(name: str) -> str:
     """Normalize a company name for matching across independent indexes."""
     return re.sub(r"[^a-z0-9]", "", name.lower())
 
 
+def company_names_match(first: object, second: object) -> bool:
+    first_normalized = normalize_company_name(str(first or ""))
+    second_normalized = normalize_company_name(str(second or ""))
+    if not first_normalized or not second_normalized:
+        return False
+    if first_normalized == second_normalized:
+        return True
+    return min(len(first_normalized), len(second_normalized)) >= 5 and (
+        first_normalized in second_normalized
+        or second_normalized in first_normalized
+    )
+
+
 @lru_cache(maxsize=1)
 def _known_quant_company_names() -> tuple[str, ...]:
-    return tuple(
-        normalize_company_name(source["company"])
-        for source in load_source_registry()
-        if "QUANT" in source.get("tags", [])
-    )
+    names = []
+    for source in load_source_registry():
+        if "QUANT" not in source.get("tags", []):
+            continue
+        names.extend([source["company"], *source.get("aliases", [])])
+    return tuple(normalize_company_name(name) for name in names)
+
+
+@lru_cache(maxsize=512)
+def canonical_company_name(name: str) -> str:
+    normalized = normalize_company_name(name)
+    for source in load_source_registry():
+        candidates = {
+            normalize_company_name(candidate)
+            for candidate in [source["company"], *source.get("aliases", [])]
+        }
+        if normalized in candidates:
+            return normalize_company_name(
+                source.get("dedupe_company") or source["company"]
+            )
+    return normalized
 
 
 def is_known_quant_company(company: object) -> bool:
@@ -1278,11 +1442,7 @@ def is_known_quant_company(company: object) -> bool:
     if not normalized:
         return False
     for known in _known_quant_company_names():
-        if normalized == known:
-            return True
-        if min(len(normalized), len(known)) >= 5 and (
-            normalized in known or known in normalized
-        ):
+        if company_names_match(normalized, known):
             return True
     return False
 
@@ -1297,6 +1457,26 @@ def parse_quant_firms(markdown: str) -> set[str]:
     return {normalize_company_name(name) for name in firm_names}
 
 
+def canonicalize_job_url(url: object) -> str:
+    raw = html.unescape(str(url or "")).strip()
+    if not raw:
+        return ""
+    parts = urlsplit(raw)
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if not key.lower().startswith("utm_")
+        and key.lower() not in {"ref", "refid", "source", "trk"}
+    ]
+    return urlunsplit((
+        parts.scheme,
+        parts.netloc.lower(),
+        parts.path.rstrip("/"),
+        urlencode(query),
+        "",
+    ))
+
+
 def parse_singapore_internships(markdown: str) -> list[dict]:
     """Extract jobs from the verified Singapore internship Markdown table."""
     jobs = []
@@ -1306,26 +1486,44 @@ def parse_singapore_internships(markdown: str) -> list[dict]:
             continue
 
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if len(cells) != 5:
+        if len(cells) < 5:
             continue
 
         company_match = re.match(r"\[([^]]+)\]\([^)]+\)", cells[0])
-        application_match = re.search(r'href="([^"]+)"', cells[3])
+        tracking_match = re.search(r'href="([^"]+)"', cells[-3])
+        application_match = re.search(r'href="([^"]+)"', cells[-2])
         if not company_match or not application_match:
             continue
 
         try:
             date_added = datetime.datetime.strptime(
-                cells[4],
+                cells[-1].replace("Sept ", "Sep "),
                 "%d %b %Y",
             ).date()
         except ValueError:
             continue
 
+        company = company_match.group(1)
+        title = " | ".join(cells[1:-3]).replace("\\ |", "|").strip()
+        job_url = canonicalize_job_url(html.unescape(application_match.group(1)))
+        tracking_url = (
+            html.unescape(tracking_match.group(1)) if tracking_match else None
+        )
+        tracking_id_match = re.search(r"/job/([a-z0-9-]+)", tracking_url or "", re.I)
+        external_id = (
+            tracking_id_match.group(1)
+            if tracking_id_match
+            else hashlib.sha256(
+                f"{normalize_company_name(company)}:{title.lower()}:{job_url}".encode()
+            ).hexdigest()[:24]
+        )
+
         jobs.append({
-            "company": company_match.group(1),
-            "title": cells[1],
-            "job_url": html.unescape(application_match.group(1)),
+            "external_id": external_id,
+            "company": company,
+            "title": title,
+            "job_url": job_url,
+            "tracking_url": tracking_url,
             "date_added": date_added,
         })
 
@@ -1346,7 +1544,7 @@ def find_recent_singapore_quant_jobs(
     for job in parse_singapore_internships(singapore_markdown):
         if job["date_added"] < cutoff:
             continue
-        if normalize_company_name(job["company"]) not in quant_firms:
+        if not any(company_names_match(job["company"], firm) for firm in quant_firms):
             continue
 
         job_data = {
@@ -1364,59 +1562,256 @@ def find_recent_singapore_quant_jobs(
     return matching_jobs
 
 
+QUANT_ROLE_LABELS = {
+    "swe": "Software Engineering Internship",
+    "qd": "Quantitative Developer Internship",
+    "qr": "Quantitative Research Internship",
+    "qt": "Quantitative Trading Internship",
+    "trading": "Trading Internship",
+    "devops/sre": "DevOps / Site Reliability Internship",
+    "hw": "Hardware Engineering Internship",
+    "data": "Data Internship",
+}
+
+
+def parse_global_quant_internships(markdown: str) -> list[dict]:
+    """Parse active application links from the global quant internship index."""
+    jobs = []
+    company = None
+    location = None
+    for raw_line in markdown.splitlines():
+        line = raw_line.strip()
+        if line.startswith("## "):
+            company = line[3:].strip()
+            location = None
+            continue
+        if line.startswith("**Locations**:"):
+            location = line.split(":", 1)[1].strip() or None
+            continue
+        if not company or not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|", 1)]
+        if len(cells) != 2 or cells[0].lower() in {"role", "-------"}:
+            continue
+        role_code, links_cell = cells
+        for label, raw_url in re.findall(
+            r"\[([^]]*)\]\((https?://[^)]+)\)",
+            links_cell,
+        ):
+            clean_label = re.sub(
+                r"[^a-z0-9+#. -]",
+                "",
+                label,
+                flags=re.IGNORECASE,
+            ).strip()
+            if re.search(r"\b(new grad|full[ -]?time|graduate)\b", clean_label, re.I):
+                continue
+            job_url = canonicalize_job_url(raw_url)
+            title = QUANT_ROLE_LABELS.get(
+                role_code.lower(),
+                f"{role_code} Internship",
+            )
+            if clean_label:
+                title = f"{title} ({clean_label})"
+            external_id = hashlib.sha256(
+                f"{normalize_company_name(company)}:{role_code.lower()}:{job_url}".encode()
+            ).hexdigest()[:24]
+            jobs.append({
+                "external_id": external_id,
+                "site": "Global Quant Internship Index",
+                "source_id": GLOBAL_QUANT_INDEX_SOURCE_ID,
+                "source_label": "Global Quant Internship Index",
+                "source_tags": ["QUANT"],
+                "company": company,
+                "title": title,
+                "job_url": job_url,
+                "location": (
+                    f"[Unverified, firm-level] {location}"
+                    if location
+                    else "[Unverified] Location not listed"
+                ),
+                "location_confidence": "firm_index_unverified",
+                "is_overseas_quant": not _contains_singapore_location(location),
+            })
+    return jobs
+
+
+class _JobSpyErrorCollector(logging.Handler):
+    def __init__(self):
+        super().__init__(level=logging.ERROR)
+        self.messages = []
+
+    def emit(self, record):
+        self.messages.append((record.name, record.getMessage()))
+
+
+def _present(value: object) -> bool:
+    if value is None:
+        return False
+    try:
+        if pd.isna(value):
+            return False
+    except (TypeError, ValueError):
+        pass
+    return bool(str(value).strip())
+
+
+def _job_richness(job: dict) -> tuple[int, int, int, int]:
+    return (
+        int(is_singapore_job(job)),
+        int(_present(job.get("job_url_direct"))),
+        len(str(job.get("description") or "")),
+        int(_present(job.get("date_posted"))),
+    )
+
+
+def merge_jobspy_results(frames: list[pd.DataFrame]) -> list[dict]:
+    """Merge repeated query and cross-site copies before applying filters."""
+    exact = {}
+    for frame in frames:
+        for _, row in frame.iterrows():
+            job = json_safe(row.to_dict())
+            key = (
+                str(job.get("site") or ""),
+                str(job.get("id") or job.get("job_url") or ""),
+            )
+            existing = exact.get(key)
+            if existing is None or _job_richness(job) > _job_richness(existing):
+                exact[key] = job
+
+    merged = {}
+    for job in exact.values():
+        key = (
+            canonical_company_name(str(job.get("company") or "")),
+            re.sub(r"[^a-z0-9]", "", str(job.get("title") or "").lower()),
+        )
+        existing = merged.get(key)
+        if existing is None:
+            candidate = dict(job)
+            candidate["discovery_sites"] = [str(job.get("site") or "JobSpy")]
+            merged[key] = candidate
+            continue
+
+        preferred, other = (
+            (job, existing)
+            if _job_richness(job) > _job_richness(existing)
+            else (existing, job)
+        )
+        combined = dict(preferred)
+        for field in ("location", "country", "description", "date_posted", "job_url_direct"):
+            if not _present(combined.get(field)) and _present(other.get(field)):
+                combined[field] = other[field]
+        sites = {
+            *(existing.get("discovery_sites") or []),
+            str(job.get("site") or "JobSpy"),
+        }
+        combined["discovery_sites"] = sorted(sites)
+        merged[key] = combined
+
+    jobs = []
+    for job in merged.values():
+        direct_url = job.get("job_url_direct")
+        if _present(direct_url):
+            job["job_url"] = direct_url
+        job["job_url"] = canonicalize_job_url(job.get("job_url"))
+        jobs.append(job)
+    return jobs
+
+
 def run_pipeline():
-    print("🚀 Running Broad Catch-All Pipeline for SG...")
+    print("🚀 Running sharded JobSpy pipeline for SG...")
     stats = PipelineStats("JobSpy")
     conn = None
-    broad_search = "(software OR developer OR data OR quant OR AI OR machine learning OR engineer) AND intern"
 
     try:
-        jobs = scrape_jobs(
-            site_name=["linkedin", "indeed", "glassdoor"],
-            search_term=broad_search,
-            location="Singapore",
-            results_wanted=RESULTS_PER_SOURCE,
-            hours_old=JOB_LOOKBACK_HOURS,
-            country_indeed='Singapore'
-        )
+        collector = _JobSpyErrorCollector()
+        loggers = [logging.getLogger(f"JobSpy:{site.title()}") for site in JOBSPY_SITES]
+        for logger in loggers:
+            logger.addHandler(collector)
+        frames = []
+        failed_shards = 0
+        try:
+            for search_term in JOB_SEARCH_SHARDS:
+                try:
+                    frame = scrape_jobs(
+                        site_name=list(JOBSPY_SITES),
+                        search_term=search_term,
+                        location="Singapore",
+                        results_wanted=RESULTS_PER_SOURCE,
+                        hours_old=JOB_LOOKBACK_HOURS,
+                        country_indeed="Singapore",
+                    )
+                except Exception as error:
+                    failed_shards += 1
+                    stats.warnings.append(f"query shard failed: {error}")
+                    continue
+                if frame is None or frame.empty:
+                    stats.warnings.append(f"query shard returned zero rows: {search_term}")
+                    continue
+                frames.append(frame)
+                stats.fetched += len(frame)
+                counts = frame["site"].value_counts().to_dict()
+                for site in JOBSPY_SITES:
+                    if counts.get(site, 0) >= RESULTS_PER_SOURCE:
+                        stats.warnings.append(
+                            f"{site} query shard saturated at {RESULTS_PER_SOURCE}: {search_term}"
+                        )
+        finally:
+            for logger in loggers:
+                logger.removeHandler(collector)
 
-        if jobs is None or jobs.empty:
+        for logger_name, message in collector.messages:
+            warning = f"{logger_name}: {message}"
+            if warning not in stats.warnings:
+                stats.warnings.append(warning)
+        for warning in stats.warnings:
+            print(f"⚠️ JobSpy warning: {warning}")
+
+        if not frames:
             print("⚠️ No results found.")
+            if failed_shards == len(JOB_SEARCH_SHARDS) or collector.messages:
+                stats.errors.append("all JobSpy query shards failed or returned no results")
             return stats
 
-        stats.fetched = len(jobs)
+        jobs = merge_jobspy_results(frames)
         if not DRY_RUN:
             conn = get_db_connection()
 
-        for _, row in jobs.iterrows():
-            job_data = row.to_dict()
-            title = row['title']
-            company = row['company']
+        for job_data in jobs:
+            title = job_data.get("title")
+            company = job_data.get("company")
 
             if not is_target_role(job_data.get("title", "")):
                 print(f"🗑️ Filtered out non-target role: {title} at {company}")
+                stats.filtered_role += 1
                 continue
 
             if not is_singapore_job(job_data):
-                print(f"🌏 Filtered out non-Singapore job: {title} at {company}")
-                continue
+                if infer_singapore_from_search(job_data):
+                    stats.inferred_location += 1
+                else:
+                    print(f"🌏 Filtered out non-Singapore job: {title} at {company}")
+                    stats.filtered_location += 1
+                    continue
 
-            raw_id = str(row['id'])
-            site = str(row['site'])
             assessment = assess_eligibility(
                 job_data.get("title", ""),
                 job_data.get("description", ""),
             )
             if assessment.verdict == "ineligible":
                 print(f"🎓 Filtered out postgraduate-only role: {title} at {company}")
+                stats.filtered_eligibility += 1
                 continue
-            job_data["source_id"] = site
-            job_data["source_label"] = f"{site.title()} job listing"
-            unique_id = f"{site}_{raw_id}"
+            sites = job_data.get("discovery_sites") or [job_data.get("site") or "JobSpy"]
+            source_label = " + ".join(site.title() for site in sites) + " job listing"
+            job_data["source_id"] = "jobspy"
+            job_data["source_label"] = source_label
+            raw_id = make_dedupe_key(job_data)[:24]
+            unique_id = f"jobspy_{raw_id}"
             observe_job(
                 conn,
                 unique_id,
-                site,
+                "jobspy",
                 raw_id,
                 job_data,
                 stats,
@@ -1435,10 +1830,16 @@ def run_pipeline():
 def scrape_registry_pipelines():
     """Fetch configured ATS and bespoke sources, then enqueue sequentially."""
     print("🚀 Running configured official-source pipelines...")
+    registry = load_source_registry()
     sources = [
         source
-        for source in load_source_registry()
+        for source in registry
         if source.get("enabled") and source.get("mode", "direct") == "direct"
+    ]
+    discovery_only_sources = [
+        source
+        for source in registry
+        if source.get("enabled") and source.get("mode") == "discovery_only"
     ]
     results_by_id = {}
     with ThreadPoolExecutor(max_workers=min(4, len(sources) or 1)) as executor:
@@ -1474,18 +1875,40 @@ def scrape_registry_pipelines():
                 stats_list.append(stats)
                 continue
 
+            if source["adapter"] == "bespoke" and result.fetched == 0:
+                warning = "bespoke source returned zero candidates"
+                stats.warnings.append(warning)
+                print(f"⚠️ {source['id']} {warning}")
+
             observed_ids = set()
+            is_global_quant_source = "QUANT" in source.get("tags", [])
+            baseline_scope = f"global_quant_official:{source['id']}"
+            baseline = (
+                source_baseline_pending(conn, baseline_scope)
+                if is_global_quant_source
+                else False
+            )
             for candidate in result.candidates:
                 job_data = candidate.to_payload()
-                if not is_target_role(job_data.get("title", "")):
+                role_match = (
+                    is_quant_intern_role(job_data.get("title", ""))
+                    if is_global_quant_source
+                    else is_target_role(job_data.get("title", ""))
+                )
+                if not role_match:
+                    stats.filtered_role += 1
                     continue
-                if not is_singapore_job(job_data):
+                if not is_global_quant_source and not is_singapore_job(job_data):
+                    stats.filtered_location += 1
                     continue
+                if is_global_quant_source:
+                    job_data["is_overseas_quant"] = not is_singapore_job(job_data)
                 assessment = assess_eligibility(
                     job_data.get("title", ""),
                     job_data.get("description", ""),
                 )
                 if assessment.verdict == "ineligible":
+                    stats.filtered_eligibility += 1
                     continue
                 unique_id = f"{source['id']}_{candidate.external_id}"
                 observed_ids.add(unique_id)
@@ -1497,6 +1920,7 @@ def scrape_registry_pipelines():
                     job_data,
                     stats,
                     assessment,
+                    baseline=baseline,
                 )
             if (
                 not DRY_RUN
@@ -1509,7 +1933,18 @@ def scrape_registry_pipelines():
                 )
                 if closed:
                     print(f"📪 {source['id']} marked {len(closed)} job(s) closed.")
+            if not DRY_RUN and is_global_quant_source and baseline:
+                complete_source_baseline(
+                    conn,
+                    baseline_scope,
+                    stats.fetched,
+                )
             stats_list.append(stats)
+        for source in discovery_only_sources:
+            stats_list.append(PipelineStats(
+                source["id"],
+                warnings=["direct scraping disabled; covered by discovery indexes"],
+            ))
     finally:
         if conn is not None:
             conn.close()
@@ -1596,6 +2031,7 @@ def scrape_internsg_pipeline():
                 if date_posted is not None and date_posted < cutoff:
                     continue
                 if not is_target_role(title):
+                    stats.filtered_role += 1
                     continue
 
                 location_element = (
@@ -1624,6 +2060,7 @@ def scrape_internsg_pipeline():
 
                 if not is_singapore_job(job_data):
                     print(f"🌏 Filtered out non-Singapore InternSG job: {title}")
+                    stats.filtered_location += 1
                     continue
 
                 canonical_url = url.split('?', 1)[0].rstrip('/')
@@ -1642,6 +2079,7 @@ def scrape_internsg_pipeline():
                     job_data.get("description", ""),
                 )
                 if assessment.verdict == "ineligible":
+                    stats.filtered_eligibility += 1
                     continue
 
                 raw_id = canonical_url.split('/')[-1]
@@ -1673,45 +2111,130 @@ def scrape_internsg_pipeline():
     return stats
 
 def scrape_singapore_quant_pipeline():
-    print("🚀 Running Singapore Quant Index Pipeline...")
-    stats = PipelineStats("SG Quant Index")
+    print("🚀 Running verified Singapore and global quant index pipelines...")
+    singapore_stats = PipelineStats("Singapore Tech Index")
+    quant_stats = PipelineStats("Global Quant Index")
     conn = None
 
     try:
-        quant_response = http_get(QUANT_INTERNSHIP_INDEX_URL)
         singapore_response = http_get(SINGAPORE_INTERNSHIP_INDEX_URL)
-        parsed_singapore_jobs = parse_singapore_internships(singapore_response.text)
-        stats.fetched = len(parsed_singapore_jobs)
-        jobs = find_recent_singapore_quant_jobs(
-            quant_response.text,
-            singapore_response.text,
-        )
-        if not jobs:
-            print("⚠️ No recent Singapore quant internships found.")
-            return stats
+        singapore_jobs = parse_singapore_internships(singapore_response.text)
+        if not singapore_jobs:
+            raise ValueError("Singapore tech index returned no parseable jobs")
+        singapore_stats.fetched = len(singapore_jobs)
 
+        quant_markdown = ""
+        try:
+            quant_response = http_get(QUANT_INTERNSHIP_INDEX_URL)
+            quant_markdown = quant_response.text
+        except Exception as error:
+            quant_stats.errors.append(str(error))
+            singapore_stats.warnings.append(
+                f"quant classification unavailable: {error}"
+            )
+
+        quant_firms = parse_quant_firms(quant_markdown) if quant_markdown else set()
         if not DRY_RUN:
             conn = get_db_connection()
-        for job in jobs:
-            url_hash = hashlib.sha256(job["job_url"].encode()).hexdigest()[:24]
-            unique_id = f"sg_quant_{url_hash}"
-            job["source_id"] = "sg_quant"
-            job["source_label"] = "Singapore Quant Internship Index"
+        singapore_baseline = source_baseline_pending(
+            conn,
+            SINGAPORE_INDEX_SOURCE_ID,
+        )
+        singapore_observed_ids = set()
+        for parsed in singapore_jobs:
+            assessment = assess_eligibility(parsed["title"], "")
+            if assessment.verdict == "ineligible":
+                singapore_stats.filtered_eligibility += 1
+                continue
+            is_quant = is_known_quant_company(parsed["company"]) or any(
+                company_names_match(parsed["company"], firm)
+                for firm in quant_firms
+            )
+            job = {
+                "site": "Singapore Tech Index",
+                "source_id": SINGAPORE_INDEX_SOURCE_ID,
+                "source_label": "Verified Singapore Tech Internship Index",
+                "source_tags": ["QUANT"] if is_quant else [],
+                "company": parsed["company"],
+                "title": parsed["title"],
+                "job_url": parsed["job_url"],
+                "tracking_url": parsed.get("tracking_url"),
+                "date_posted": parsed["date_added"],
+                "location": "Singapore",
+            }
+            unique_id = f"{SINGAPORE_INDEX_SOURCE_ID}_{parsed['external_id']}"
+            singapore_observed_ids.add(unique_id)
             observe_job(
                 conn,
                 unique_id,
-                "sg_quant",
-                url_hash,
+                SINGAPORE_INDEX_SOURCE_ID,
+                parsed["external_id"],
                 job,
-                stats,
+                singapore_stats,
+                assessment,
+                baseline=singapore_baseline,
             )
+
+        if not DRY_RUN:
+            reconcile_source_snapshot(
+                conn,
+                SINGAPORE_INDEX_SOURCE_ID,
+                singapore_observed_ids,
+            )
+            if singapore_baseline:
+                complete_source_baseline(
+                    conn,
+                    SINGAPORE_INDEX_SOURCE_ID,
+                    singapore_stats.fetched,
+                )
+
+        if quant_markdown:
+            quant_jobs = parse_global_quant_internships(quant_markdown)
+            if not quant_jobs:
+                raise ValueError("global quant index returned no parseable jobs")
+            quant_stats.fetched = len(quant_jobs)
+            quant_baseline = source_baseline_pending(
+                conn,
+                GLOBAL_QUANT_INDEX_SOURCE_ID,
+            )
+            quant_observed_ids = set()
+            for job in quant_jobs:
+                assessment = assess_eligibility(job["title"], "")
+                if assessment.verdict == "ineligible":
+                    quant_stats.filtered_eligibility += 1
+                    continue
+                external_id = job.pop("external_id")
+                unique_id = f"{GLOBAL_QUANT_INDEX_SOURCE_ID}_{external_id}"
+                quant_observed_ids.add(unique_id)
+                observe_job(
+                    conn,
+                    unique_id,
+                    GLOBAL_QUANT_INDEX_SOURCE_ID,
+                    external_id,
+                    job,
+                    quant_stats,
+                    assessment,
+                    baseline=quant_baseline,
+                )
+            if not DRY_RUN:
+                reconcile_source_snapshot(
+                    conn,
+                    GLOBAL_QUANT_INDEX_SOURCE_ID,
+                    quant_observed_ids,
+                )
+                if quant_baseline:
+                    complete_source_baseline(
+                        conn,
+                        GLOBAL_QUANT_INDEX_SOURCE_ID,
+                        quant_stats.fetched,
+                    )
     except Exception as e:
-        print(f"❌ Singapore Quant Pipeline Error: {e}")
-        stats.errors.append(str(e))
+        print(f"❌ Internship index pipeline error: {e}")
+        singapore_stats.errors.append(str(e))
     finally:
         if conn is not None:
             conn.close()
-    return stats
+    return [singapore_stats, quant_stats]
 
 
 def print_run_summary(stats_list: list[PipelineStats]) -> None:
@@ -1720,7 +2243,11 @@ def print_run_summary(stats_list: list[PipelineStats]) -> None:
         print(
             f"- {stats.source}: fetched={stats.fetched}, "
             f"matched={stats.matched}, queued={stats.queued}, "
-            f"duplicates={stats.duplicates}, warnings={len(stats.warnings)}, "
+            f"duplicates={stats.duplicates}, filtered_role={stats.filtered_role}, "
+            f"filtered_location={stats.filtered_location}, "
+            f"filtered_eligibility={stats.filtered_eligibility}, "
+            f"inferred_location={stats.inferred_location}, "
+            f"warnings={len(stats.warnings)}, "
             f"errors={len(stats.errors)}"
         )
 

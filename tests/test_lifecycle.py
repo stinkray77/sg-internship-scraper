@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import main
 from eligibility import assess_eligibility
-from source_adapters import SourceFetchResult
+from source_adapters import JobCandidate, SourceFetchResult
 
 
 def sample_job(**overrides):
@@ -60,6 +60,31 @@ class LifecycleTests(unittest.TestCase):
         )
         self.assertFalse(enqueue.call_args.kwargs["commit"])
         self.conn.commit.assert_called_once()
+
+    def test_new_baseline_observation_is_backfilled_without_delivery(self):
+        self.cursor.fetchone.return_value = None
+        with (
+            patch("main.DRY_RUN", False),
+            patch("main.enqueue_job") as enqueue,
+        ):
+            outcome = main.observe_job(
+                self.conn,
+                "global_quant_1",
+                "global_quant",
+                "1",
+                sample_job(location="London", is_overseas_quant=True),
+                self.stats,
+                baseline=True,
+            )
+
+        self.assertEqual(outcome, main.LifecycleOutcome("backfilled", False))
+        enqueue.assert_not_called()
+        insert_params = next(
+            call.args[1]
+            for call in self.cursor.execute.call_args_list
+            if "INSERT INTO job_observations" in call.args[0]
+        )
+        self.assertEqual(insert_params[9], 0)
 
     def test_material_change_records_update_without_alert(self):
         first_seen = datetime.datetime(2026, 7, 1, tzinfo=datetime.timezone.utc)
@@ -270,6 +295,71 @@ class LifecycleTests(unittest.TestCase):
             set(),
         )
 
+    def test_quant_registry_accepts_overseas_technical_internship(self):
+        source = {
+            "id": "greenhouse_quant_test",
+            "company": "Test Quant",
+            "adapter": "greenhouse",
+            "enabled": True,
+            "lifecycle_mode": "snapshot",
+            "tags": ["QUANT"],
+            "config": {"token": "test"},
+        }
+        result = SourceFetchResult(
+            "greenhouse_quant_test",
+            candidates=[JobCandidate(
+                source_id="greenhouse_quant_test",
+                external_id="1",
+                company="Test Quant",
+                title="Software Engineer Intern",
+                job_url="https://example.com/1",
+                location="London",
+                source_tags=["QUANT"],
+            )],
+            fetched=1,
+        )
+        with (
+            patch("main.DRY_RUN", True),
+            patch("main.load_source_registry", return_value=[source]),
+            patch("main.fetch_source", return_value=result),
+        ):
+            stats = main.scrape_registry_pipelines()
+
+        self.assertEqual(stats[0].matched, 1)
+        self.assertEqual(stats[0].filtered_location, 0)
+        self.assertEqual(stats[0].queued, 0)
+
+    def test_new_index_sources_are_silently_baselined(self):
+        singapore_markdown = """
+| Company | Role | Track | Application | Date Added |
+|---|---|:---:|:---:|:---:|
+| [Example Quant](https://example.com/company) | Software Engineer Intern | <a href="https://didtheyghost.me/job/sg-1">Track</a> | <a href="https://example.com/sg-job">Apply</a> | 30 Aug 2026 |
+"""
+        quant_markdown = """
+## Example Quant
+**Website**: https://example.com
+**Locations**: London
+|Role|Links|
+|-------|-------|
+|SWE|[✅](https://example.com/global-job)|
+"""
+        responses = [
+            MagicMock(text=singapore_markdown),
+            MagicMock(text=quant_markdown),
+        ]
+        with (
+            patch("main.DRY_RUN", True),
+            patch("main.http_get", side_effect=responses),
+        ):
+            singapore_stats, quant_stats = main.scrape_singapore_quant_pipeline()
+
+        self.assertEqual(singapore_stats.fetched, 1)
+        self.assertEqual(singapore_stats.matched, 1)
+        self.assertEqual(singapore_stats.queued, 0)
+        self.assertEqual(quant_stats.fetched, 1)
+        self.assertEqual(quant_stats.matched, 1)
+        self.assertEqual(quant_stats.queued, 0)
+
 
 class MigrationTests(unittest.TestCase):
     def test_init_db_creates_lifecycle_tables_and_silent_backfill(self):
@@ -282,6 +372,7 @@ class MigrationTests(unittest.TestCase):
         )
         self.assertIn("CREATE TABLE IF NOT EXISTS job_observations", sql)
         self.assertIn("CREATE TABLE IF NOT EXISTS job_lifecycle_events", sql)
+        self.assertIn("CREATE TABLE IF NOT EXISTS source_sync_state", sql)
         self.assertIn("delivery_mode TEXT NOT NULL DEFAULT 'immediate'", sql)
         self.assertIn("INSERT INTO job_observations", sql)
         self.assertIn("'backfilled'", sql)

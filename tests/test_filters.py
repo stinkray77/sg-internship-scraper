@@ -5,11 +5,15 @@ import datetime
 from eligibility import assess_eligibility
 
 from main import (
+    canonical_company_name,
+    company_names_match,
     find_recent_singapore_quant_jobs,
+    infer_singapore_from_search,
     is_quant_intern_role,
     is_singapore_job,
     is_target_role,
     is_undergrad_technical_job,
+    parse_global_quant_internships,
     parse_quant_firms,
     parse_singapore_internships,
 )
@@ -26,6 +30,10 @@ class SingaporeJobFilterTests(unittest.TestCase):
         self.assertTrue(is_target_role("Quant Trading Winternship"))
         self.assertTrue(is_target_role("Software Engineer Trainee"))
         self.assertTrue(is_target_role("Accelerator Program - Backend Engineer"))
+        self.assertTrue(is_target_role("Reinforcement Learning Intern"))
+        self.assertTrue(is_target_role("NPU Engineer Intern"))
+        self.assertTrue(is_target_role("Business Intelligence Intern"))
+        self.assertTrue(is_target_role("Enterprise Architecture Intern"))
         self.assertFalse(is_target_role("Marketing Data Intern"))
         self.assertFalse(is_target_role("Engineering Intern, HVAC"))
         self.assertFalse(is_target_role("Finance Research Intern"))
@@ -64,6 +72,18 @@ class SingaporeJobFilterTests(unittest.TestCase):
         self.assertEqual(
             assessment.work_authorization,
             "Existing work authorization required",
+        )
+
+    def test_structured_eligibility_extracts_relocation_support(self):
+        assessment = assess_eligibility(
+            "Quantitative Developer Intern",
+            "Visa sponsorship is available and we provide relocation assistance.",
+        )
+
+        self.assertEqual(assessment.work_authorization, "Sponsorship available")
+        self.assertEqual(
+            assessment.relocation_support,
+            "Relocation support available",
         )
 
     def test_structured_eligibility_rejects_exclusive_postgraduate_roles(self):
@@ -134,6 +154,16 @@ class SingaporeJobFilterTests(unittest.TestCase):
         for job in rejected_jobs:
             with self.subTest(job=job):
                 self.assertFalse(is_singapore_job(job))
+
+    def test_singapore_search_inference_accepts_only_blank_or_generic_metadata(self):
+        missing = {"location": None, "country": None}
+        generic = {"location": "APAC"}
+        foreign = {"location": "Bengaluru, India"}
+
+        self.assertTrue(infer_singapore_from_search(missing))
+        self.assertIn("[Inference]", missing["location"])
+        self.assertTrue(infer_singapore_from_search(generic))
+        self.assertFalse(infer_singapore_from_search(foreign))
 
     def test_representative_source_payloads(self):
         source_jobs = {
@@ -206,6 +236,54 @@ class QuantIndexTests(unittest.TestCase):
         self.assertEqual(jobs[0]["company"], "Hudson River Trading")
         self.assertEqual(jobs[0]["location"], "Singapore")
 
+    def test_singapore_parser_handles_pipe_in_title_and_stable_tracking_id(self):
+        markdown = r"""
+| Company | Role | Track | Application | Date Added |
+|---|---|:---:|:---:|:---:|
+| [Amber Group](https://example.com/company) | AI Intern \| Edge AI | <a href="https://didtheyghost.me/job/123e4567-e89b-12d3-a456-426614174000">Track</a> | <a href="https://example.com/apply?utm_source=x">Apply</a> | 26 Aug 2026 |
+"""
+        jobs = parse_singapore_internships(markdown)
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["title"], "AI Intern | Edge AI")
+        self.assertEqual(
+            jobs[0]["external_id"],
+            "123e4567-e89b-12d3-a456-426614174000",
+        )
+        self.assertEqual(jobs[0]["job_url"], "https://example.com/apply")
+
+    def test_company_matching_handles_quant_name_suffixes(self):
+        self.assertTrue(company_names_match(
+            "Qube Research & Technologies (QRT)",
+            "Qube Research & Technologies",
+        ))
+        self.assertTrue(company_names_match(
+            "Tower Research Capital",
+            "Tower Research",
+        ))
+        self.assertNotEqual(
+            canonical_company_name("Citadel"),
+            canonical_company_name("Citadel Securities"),
+        )
+
+    def test_parses_global_quant_links_and_marks_location_unverified(self):
+        markdown = """
+## Example Quant
+**Website**: https://example.com
+**Locations**: London, Singapore
+|Role|Links|
+|-------|-------|
+|SWE|[✅ Undergrad](https://example.com/job/1?utm_source=index)|
+|QR|[✅ New Grad](https://example.com/job/2)|
+"""
+        jobs = parse_global_quant_internships(markdown)
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["company"], "Example Quant")
+        self.assertEqual(jobs[0]["job_url"], "https://example.com/job/1")
+        self.assertIn("[Unverified, firm-level]", jobs[0]["location"])
+
 
 if __name__ == "__main__":
     unittest.main()
+    parse_global_quant_internships,

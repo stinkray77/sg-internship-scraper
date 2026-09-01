@@ -1,8 +1,8 @@
-name: Hourly Job Scraper
+name: Twice-Hourly Job Scraper
 
 on:
   schedule:
-    - cron: '17 * * * *'
+    - cron: '17,47 * * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -16,7 +16,7 @@ on:
           - live
 
 concurrency:
-  group: hourly-job-scraper
+  group: twice-hourly-job-scraper
   cancel-in-progress: false
 
 jobs:

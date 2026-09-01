@@ -99,6 +99,11 @@ def validate_source_registry(sources: list[dict]) -> None:
         tags = source.get("tags", [])
         if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
             raise ValueError(f"tags must be a list of strings for {source_id}")
+        aliases = source.get("aliases", [])
+        if not isinstance(aliases, list) or any(
+            not isinstance(alias, str) for alias in aliases
+        ):
+            raise ValueError(f"aliases must be a list of strings for {source_id}")
         lifecycle_mode = source.get("lifecycle_mode", "seen_only")
         if lifecycle_mode not in {"seen_only", "snapshot"}:
             raise ValueError(f"invalid lifecycle mode for {source_id}")
