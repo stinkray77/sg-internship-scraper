@@ -20,12 +20,17 @@ from psycopg2.extras import Json
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
-from jobspy import scrape_jobs
+from jobspy_fetch import fetch_jobspy_shard as scrape_jobs
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 from source_adapters import fetch_source, load_source_registry
 from eligibility import EligibilityAssessment, assess_eligibility
 from role_patterns import STUDENT_ROLE_PATTERN, normalize_role_title
+from delivery_worker import DeliveryWorker, DELIVERY_LOCK
+from http_limits import source_deadline, request_slot
+from source_health import migrate_health_schema, record_run, record_candidate, write_summary
+from maintenance import load_indexes, run_maintenance, policy_cache
+from job_content import extract_content, ambiguous_technical_student, overseas_eligible, load_policies
 from identity import migrate_identity_schema, backfill_identities, resolve_identity, observation_identity
 from categories import CATEGORY_ORDER, classify_job_categories, primary_category
 
@@ -49,6 +54,10 @@ JOB_SEARCH_SHARDS = (
     "(software OR developer OR backend OR frontend OR fullstack OR firmware OR systems) AND (intern OR internship)",
     "(data OR AI OR machine learning OR reinforcement learning OR security OR cloud OR infrastructure) AND (intern OR internship)",
     "(quant OR quantitative OR trading OR trader OR technology OR IT) AND (intern OR internship)",
+)
+JOB_SEARCH_SHARDS += (
+    '(software OR technology OR data OR quantitative) AND ("co-op" OR "industrial attachment")',
+    '(technology OR engineering OR quantitative) AND ("summer analyst" OR "off-cycle analyst")',
 )
 JOBSPY_SITES = ("linkedin", "indeed", "glassdoor")
 SINGAPORE_INDEX_SOURCE_ID = "sg_tech_index"
@@ -156,6 +165,8 @@ class PipelineStats:
     inferred_location: int = 0
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    duration_seconds: float = 0.0
+    complete: bool = True
 
 
 @dataclass
@@ -166,10 +177,10 @@ class LifecycleOutcome:
 
 def build_http_session() -> requests.Session:
     retry = Retry(
-        total=3,
-        connect=3,
-        read=3,
-        status=3,
+        total=1,
+        connect=1,
+        read=1,
+        status=1,
         backoff_factor=1,
         status_forcelist=(429, 500, 502, 503, 504),
         allowed_methods=frozenset({"GET", "POST"}),
@@ -194,9 +205,11 @@ def get_http_session() -> requests.Session:
 
 def http_request(method: str, url: str, **kwargs) -> requests.Response:
     kwargs.setdefault("timeout", HTTP_TIMEOUT_SECONDS)
-    response = get_http_session().request(method, url, **kwargs)
-    response.raise_for_status()
-    return response
+    with request_slot(url) as remaining:
+        kwargs["timeout"] = min(kwargs["timeout"], remaining)
+        response = get_http_session().request(method, url, **kwargs)
+        response.raise_for_status()
+        return response
 
 
 def http_get(url: str, **kwargs) -> requests.Response:
@@ -208,6 +221,7 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
+    cur.execute("SELECT pg_advisory_xact_lock(%s)", (734819221,))
     cur.execute("""
         CREATE TABLE IF NOT EXISTS seen_jobs (
             job_id TEXT PRIMARY KEY,
@@ -336,6 +350,7 @@ def init_db():
         ON CONFLICT DO NOTHING;
     """)
     migrate_identity_schema(cur)
+    migrate_health_schema(cur)
     backfill_identities(cur)
     conn.commit()
     cur.close()
@@ -363,6 +378,18 @@ def _format_message_date(value: object) -> str:
             except ValueError:
                 return raw
     return parsed.strftime("%d %b %Y")
+
+
+def _format_seen_time(value):
+    if not value:
+        return "Not provided"
+    try:
+        parsed = datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        return parsed.astimezone(DELIVERY_TIMEZONE).strftime("%d %b %Y %H:%M")
+    except ValueError:
+        return str(value)
 
 
 def _format_location(value: object) -> str:
@@ -422,10 +449,22 @@ def build_telegram_message(job: dict) -> str:
             lines.append("   • <b>Work rights:</b> Not stated; verify posting")
         if not eligibility.get("relocation_support"):
             lines.append("   • <b>Relocation:</b> Not stated; verify posting")
+    if job.get("responsibilities"):
+        lines.append("\n<b>Role:</b> " + " • ".join(_message_value(v, 220) for v in job["responsibilities"][:2]))
+    if job.get("skills"):
+        lines.append("<b>Skills:</b> " + _message_value(", ".join(job["skills"][:5]), 150))
+    for label, field in (("Internship dates", "internship_dates"), ("Apply by", "application_deadline")):
+        if job.get(field):
+            lines.append(f"<b>{label}:</b> {_message_value(job[field], 160)}")
+    if job.get("is_overseas") or job.get("is_overseas_quant"):
+        lines.append("<b>Visa support:</b> " + _message_value(job.get("visa_support", "unknown")))
+        for evidence in job.get("support_evidence", [])[:4]:
+            link = html.escape(str(evidence.get("source_url") or ""), quote=True)
+            lines.append(f"• {_message_value(evidence['kind'])}: {_message_value(evidence['status'])} — {_message_value(evidence['excerpt'], 160)} <a href=\"{link}\">Evidence</a>")
     lines.extend([
         "",
-        f"📅 <b>Posted:</b> {_message_value(_format_message_date(job.get('date_posted')))}",
-        f"👀 <b>First seen:</b> {_message_value(_format_message_date(job.get('first_seen_at')))}",
+        f"📅 <b>{_message_value(job.get('date_label') or 'Posted')} :</b> {_message_value(_format_message_date(job.get('date_posted')))}",
+        f"👀 <b>First seen (SGT):</b> {_message_value(_format_seen_time(job.get('first_seen_at')))}",
         f"🔎 <b>Source:</b> {_message_value(job.get('source_label') or job.get('site') or 'Unknown', 180)}",
         "",
         (
@@ -434,8 +473,12 @@ def build_telegram_message(job: dict) -> str:
         ),
     ])
     message = "\n".join(lines)
-    if len(BeautifulSoup(message, "html.parser").get_text()) > 3500:
-        raise ValueError("Telegram message exceeds the 3500-character safety limit")
+    while len(BeautifulSoup(message, "html.parser").get_text()) > 3500:
+        optional = next((i for i, line in enumerate(lines) if line.startswith(("\n<b>Role:", "<b>Skills:", "• "))), None)
+        if optional is None:
+            raise ValueError("Telegram message exceeds the 3500-character safety limit")
+        lines.pop(optional)
+        message = "\n".join(lines)
     return message
 
 
@@ -636,6 +679,7 @@ def make_content_fingerprint(job: dict) -> str:
         "date_posted": job.get("date_posted"),
         "eligibility": job.get("eligibility"),
         "categories": job.get("categories"),
+        "content": {k: job.get(k) for k in ("responsibilities", "skills", "application_deadline", "visa_support", "alert_eligible")},
     }
     encoded = json.dumps(json_safe(material), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode()).hexdigest()
@@ -695,11 +739,19 @@ def observe_job(
         job["source_tags"] = list({*(job.get("source_tags") or []), "QUANT"})
     payload = normalize_job_payload(job)
     payload["source_id"] = source_id
+    if source_id.startswith("greenhouse_"):
+        payload["date_label"] = "Employer updated"
+    elif source_id.endswith("index"):
+        payload["date_label"] = "Index added"
+    else:
+        payload.setdefault("date_label", "Posted")
     payload["eligibility"] = assessment.to_payload()
-    payload.pop("description", None)
+    payload.update(extract_content(job.get("description", "")))
     fingerprint = make_content_fingerprint(payload)
 
     if DRY_RUN:
+        if not payload.get("alert_eligible", True):
+            return LifecycleOutcome("excluded")
         if baseline:
             print(f"🧪 Would backfill silently: {payload['title']} at {payload['company']}")
             return LifecycleOutcome("backfilled")
@@ -835,8 +887,11 @@ def observe_job(
                     now,
                 )
 
-        if event_type in {"new", "reopened"} and not baseline:
+        newly_eligible = existing is not None and not old_payload.get("alert_eligible", True) and payload.get("alert_eligible", True)
+        if (event_type in {"new", "reopened"} or newly_eligible) and not baseline and payload.get("alert_eligible", True):
             delivery_id = observation_id
+            if newly_eligible:
+                delivery_id = f"{observation_id}:eligible:{version}"
             if event_type == "reopened":
                 delivery_id = f"{observation_id}:reopened:{version}"
             delivery_payload = {
@@ -1216,9 +1271,18 @@ def deliver_pending_jobs(only_job_id: str | None = None) -> int:
 
     failures = 0
     conn = get_db_connection()
+    locked = False
+    started = time.monotonic()
     try:
         if only_job_id is None:
-            while True:
+            with conn.cursor() as lock_cursor:
+                lock_cursor.execute("SELECT pg_try_advisory_lock(%s)", (DELIVERY_LOCK,))
+                locked = bool(lock_cursor.fetchone()[0])
+            conn.commit()
+            if not locked:
+                return 0
+        if only_job_id is None:
+            while time.monotonic()-started < 45:
                 digest_rows = claim_due_digest(conn)
                 if not digest_rows:
                     break
@@ -1241,7 +1305,7 @@ def deliver_pending_jobs(only_job_id: str | None = None) -> int:
                     )
                     print(f"⚠️ Digest delivery {job_id} marked {status}.")
 
-        while True:
+        while time.monotonic()-started < 45:
             claimed = claim_due_delivery(conn, only_job_id=only_job_id)
             if claimed is None:
                 break
@@ -1344,6 +1408,10 @@ def is_quant_intern_role(title: str) -> bool:
 def is_explicitly_phd_only(title: str, description: str = "") -> bool:
     """Compatibility helper for explicit postgraduate-only requirements."""
     return assess_eligibility(title, description).verdict == "ineligible"
+
+
+def excluded_ambiguous_title(title):
+    return bool(re.search(r"\b(sales|marketing|hr|human resources|accounting|retail|product management|product manager|project management|design|civil engineering|mechanical engineering|chemical engineering)\b", normalize_role_title(title)))
 
 
 def is_undergrad_technical_job(job: dict) -> bool:
@@ -1788,8 +1856,10 @@ def run_pipeline():
         for job_data in jobs:
             title = job_data.get("title")
             company = job_data.get("company")
+            if conn is not None:
+                record_candidate(conn, job_data)
 
-            if not is_target_role(job_data.get("title", "")):
+            if not (is_target_role(job_data.get("title", "")) or (not excluded_ambiguous_title(title) and ambiguous_technical_student(title, job_data.get("description", "")))):
                 print(f"🗑️ Filtered out non-target role: {title} at {company}")
                 stats.filtered_role += 1
                 continue
@@ -1800,7 +1870,7 @@ def run_pipeline():
                 else:
                     print(f"🌏 Filtered out non-Singapore job: {title} at {company}")
                     stats.filtered_location += 1
-                    continue
+            job_data["alert_eligible"] = overseas_eligible(job_data, is_singapore_job(job_data), is_known_quant_company(company), load_policies())
 
             assessment = assess_eligibility(
                 job_data.get("title", ""),
@@ -1835,126 +1905,75 @@ def run_pipeline():
     return stats
 
 
+def _fetch_source_timed(source):
+    started = time.monotonic()
+    with source_deadline():
+        result = fetch_source(source, http_request)
+    return result, time.monotonic() - started
+
+
 def scrape_registry_pipelines():
-    """Fetch configured ATS and bespoke sources, then enqueue sequentially."""
-    print("🚀 Running configured official-source pipelines...")
+    """Process completed boards immediately; database writes stay sequential."""
     registry = load_source_registry()
-    sources = [
-        source
-        for source in registry
-        if source.get("enabled") and source.get("mode", "direct") == "direct"
-    ]
-    discovery_only_sources = [
-        source
-        for source in registry
-        if source.get("enabled") and source.get("mode") == "discovery_only"
-    ]
-    results_by_id = {}
-    with ThreadPoolExecutor(max_workers=min(4, len(sources) or 1)) as executor:
-        futures = {
-            executor.submit(fetch_source, source, http_request): source
-            for source in sources
-        }
-        for future in as_completed(futures):
-            source = futures[future]
-            try:
-                results_by_id[source["id"]] = future.result()
-            except Exception as error:
-                results_by_id[source["id"]] = None
-                print(f"⚠️ {source['id']} fetch failed: {error}")
-
-    conn = None if DRY_RUN else get_db_connection()
+    sources = [s for s in registry if s.get("enabled") and s.get("mode", "direct") == "direct"]
     stats_list = []
+    conn = None if DRY_RUN else get_db_connection()
+    policies = load_policies() + (policy_cache(conn) if conn else [])
     try:
-        for source in sources:
-            stats = PipelineStats(source["id"])
-            result = results_by_id.get(source["id"])
-            if result is None:
-                stats.errors.append("source worker failed")
-                stats_list.append(stats)
-                continue
-            stats.fetched = result.fetched
-            stats.warnings.extend(result.warnings)
-            for warning in result.warnings:
-                print(f"⚠️ {source['id']} warning: {warning}")
-            if result.error:
-                print(f"⚠️ {source['id']} source error: {result.error}")
-                stats.errors.append(result.error)
-                stats_list.append(stats)
-                continue
-
-            if source["adapter"] == "bespoke" and result.fetched == 0:
-                warning = "bespoke source returned zero candidates"
-                stats.warnings.append(warning)
-                print(f"⚠️ {source['id']} {warning}")
-
-            observed_ids = set()
-            is_global_quant_source = "QUANT" in source.get("tags", [])
-            baseline_scope = f"global_quant_official:{source['id']}"
-            baseline = (
-                source_baseline_pending(conn, baseline_scope)
-                if is_global_quant_source
-                else False
-            )
-            for candidate in result.candidates:
-                job_data = candidate.to_payload()
-                role_match = (
-                    is_quant_intern_role(job_data.get("title", ""))
-                    if is_global_quant_source
-                    else is_target_role(job_data.get("title", ""))
-                )
-                if not role_match:
-                    stats.filtered_role += 1
-                    continue
-                if not is_global_quant_source and not is_singapore_job(job_data):
-                    stats.filtered_location += 1
-                    continue
-                if is_global_quant_source:
-                    job_data["is_overseas_quant"] = not is_singapore_job(job_data)
-                assessment = assess_eligibility(
-                    job_data.get("title", ""),
-                    job_data.get("description", ""),
-                )
-                if assessment.verdict == "ineligible":
-                    stats.filtered_eligibility += 1
-                    continue
-                unique_id = f"{source['id']}_{candidate.external_id}"
-                observed_ids.add(unique_id)
-                observe_job(
-                    conn,
-                    unique_id,
-                    source["id"],
-                    candidate.external_id,
-                    job_data,
-                    stats,
-                    assessment,
-                    baseline=baseline,
-                )
-            if (
-                not DRY_RUN
-                and source.get("lifecycle_mode") == "snapshot"
-            ):
-                closed = reconcile_source_snapshot(
-                    conn,
-                    source["id"],
-                    observed_ids,
-                )
-                if closed:
-                    print(f"📪 {source['id']} marked {len(closed)} job(s) closed.")
-            if not DRY_RUN and is_global_quant_source and baseline:
-                complete_source_baseline(
-                    conn,
-                    baseline_scope,
-                    stats.fetched,
-                )
-            stats_list.append(stats)
-        for source in discovery_only_sources:
-            stats_list.append(PipelineStats(
-                source["id"],
-                warnings=["direct scraping disabled; covered by discovery indexes"],
-            ))
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(_fetch_source_timed, source): source for source in sources}
+            for future in as_completed(futures):
+                source = futures[future]
+                stats = PipelineStats(source["id"])
+                try:
+                    result, stats.duration_seconds = future.result()
+                    stats.fetched = result.fetched
+                    stats.warnings.extend(result.warnings)
+                    stats.complete = result.complete and not result.error
+                    if result.error:
+                        stats.errors.append(result.error)
+                        continue
+                    observed_ids = set()
+                    quant = "QUANT" in source.get("tags", [])
+                    for candidate in result.candidates:
+                        job = candidate.to_payload()
+                        unique_id = f"{source['id']}_{candidate.external_id}"
+                        observed_ids.add(unique_id)
+                        role_match = is_quant_intern_role(job["title"]) if quant else is_target_role(job["title"])
+                        role_match = role_match or (not excluded_ambiguous_title(job["title"]) and ambiguous_technical_student(job["title"], job.get("description")))
+                        if not role_match:
+                            stats.filtered_role += 1
+                            continue
+                        job["alert_eligible"] = overseas_eligible(job, is_singapore_job(job), quant, policies)
+                        if quant:
+                            job["is_overseas_quant"] = not is_singapore_job(job)
+                        if not job["alert_eligible"]:
+                            stats.filtered_location += 1
+                        assessment = assess_eligibility(job["title"], job.get("description", ""))
+                        if assessment.verdict == "ineligible":
+                            stats.filtered_eligibility += 1
+                            continue
+                        observe_job(conn, unique_id, source["id"], candidate.external_id, job, stats, assessment)
+                    if not DRY_RUN and source.get("lifecycle_mode") == "snapshot" and stats.complete:
+                        reconcile_source_snapshot(conn, source["id"], observed_ids)
+                except Exception as error:
+                    stats.errors.append(str(error))
+                    stats.complete = False
+                    if conn:
+                        conn.rollback()
+                finally:
+                    if conn:
+                        try:
+                            record_run(conn, stats)
+                        except Exception as error:
+                            conn.rollback()
+                            stats.errors.append(f"health persistence: {error}")
+                    stats_list.append(stats)
+        for source in registry:
+            if source.get("enabled") and source.get("mode") == "discovery_only":
+                stats_list.append(PipelineStats(source["id"], warnings=["Discovery-only coverage; direct board unavailable"], complete=False))
     finally:
-        if conn is not None:
+        if conn:
             conn.close()
     return stats_list
 
@@ -2038,7 +2057,7 @@ def scrape_internsg_pipeline():
 
                 if date_posted is not None and date_posted < cutoff:
                     continue
-                if not is_target_role(title):
+                if not is_target_role(title) and (excluded_ambiguous_title(title) or not re.search(STUDENT_ROLE_PATTERN, normalize_role_title(title))):
                     stats.filtered_role += 1
                     continue
 
@@ -2081,6 +2100,9 @@ def scrape_internsg_pipeline():
                     warning = f"detail {url}: {error}"
                     stats.warnings.append(warning)
                     print(f"⚠️ InternSG {warning}")
+                if not (is_target_role(title) or ambiguous_technical_student(title, job_data.get("description", ""))):
+                    stats.filtered_role += 1
+                    continue
 
                 assessment = assess_eligibility(
                     job_data.get("title", ""),
@@ -2119,130 +2141,55 @@ def scrape_internsg_pipeline():
     return stats
 
 def scrape_singapore_quant_pipeline():
-    print("🚀 Running verified Singapore and global quant index pipelines...")
-    singapore_stats = PipelineStats("Singapore Tech Index")
-    quant_stats = PipelineStats("Global Quant Index")
-    conn = None
-
+    """Each configured index fails independently and retains its stable source ID."""
+    stats_list = []
+    conn = None if DRY_RUN else get_db_connection()
     try:
-        singapore_response = http_get(SINGAPORE_INTERNSHIP_INDEX_URL)
-        singapore_jobs = parse_singapore_internships(singapore_response.text)
-        if not singapore_jobs:
-            raise ValueError("Singapore tech index returned no parseable jobs")
-        singapore_stats.fetched = len(singapore_jobs)
-
-        quant_markdown = ""
-        try:
-            quant_response = http_get(QUANT_INTERNSHIP_INDEX_URL)
-            quant_markdown = quant_response.text
-        except Exception as error:
-            quant_stats.errors.append(str(error))
-            singapore_stats.warnings.append(
-                f"quant classification unavailable: {error}"
-            )
-
-        quant_firms = parse_quant_firms(quant_markdown) if quant_markdown else set()
-        if not DRY_RUN:
-            conn = get_db_connection()
-        singapore_baseline = source_baseline_pending(
-            conn,
-            SINGAPORE_INDEX_SOURCE_ID,
-        )
-        singapore_observed_ids = set()
-        for parsed in singapore_jobs:
-            assessment = assess_eligibility(parsed["title"], "")
-            if assessment.verdict == "ineligible":
-                singapore_stats.filtered_eligibility += 1
-                continue
-            is_quant = is_known_quant_company(parsed["company"]) or any(
-                company_names_match(parsed["company"], firm)
-                for firm in quant_firms
-            )
-            job = {
-                "site": "Singapore Tech Index",
-                "source_id": SINGAPORE_INDEX_SOURCE_ID,
-                "source_label": "Verified Singapore Tech Internship Index",
-                "source_tags": ["QUANT"] if is_quant else [],
-                "company": parsed["company"],
-                "title": parsed["title"],
-                "job_url": parsed["job_url"],
-                "tracking_url": parsed.get("tracking_url"),
-                "date_posted": parsed["date_added"],
-                "location": "Singapore",
-            }
-            unique_id = f"{SINGAPORE_INDEX_SOURCE_ID}_{parsed['external_id']}"
-            singapore_observed_ids.add(unique_id)
-            observe_job(
-                conn,
-                unique_id,
-                SINGAPORE_INDEX_SOURCE_ID,
-                parsed["external_id"],
-                job,
-                singapore_stats,
-                assessment,
-                baseline=singapore_baseline,
-            )
-
-        if not DRY_RUN:
-            reconcile_source_snapshot(
-                conn,
-                SINGAPORE_INDEX_SOURCE_ID,
-                singapore_observed_ids,
-            )
-            if singapore_baseline:
-                complete_source_baseline(
-                    conn,
-                    SINGAPORE_INDEX_SOURCE_ID,
-                    singapore_stats.fetched,
-                )
-
-        if quant_markdown:
-            quant_jobs = parse_global_quant_internships(quant_markdown)
-            if not quant_jobs:
-                raise ValueError("global quant index returned no parseable jobs")
-            quant_stats.fetched = len(quant_jobs)
-            quant_baseline = source_baseline_pending(
-                conn,
-                GLOBAL_QUANT_INDEX_SOURCE_ID,
-            )
-            quant_observed_ids = set()
-            for job in quant_jobs:
-                assessment = assess_eligibility(job["title"], "")
-                if assessment.verdict == "ineligible":
-                    quant_stats.filtered_eligibility += 1
-                    continue
-                external_id = job.pop("external_id")
-                unique_id = f"{GLOBAL_QUANT_INDEX_SOURCE_ID}_{external_id}"
-                quant_observed_ids.add(unique_id)
-                observe_job(
-                    conn,
-                    unique_id,
-                    GLOBAL_QUANT_INDEX_SOURCE_ID,
-                    external_id,
-                    job,
-                    quant_stats,
-                    assessment,
-                    baseline=quant_baseline,
-                )
-            if not DRY_RUN:
-                reconcile_source_snapshot(
-                    conn,
-                    GLOBAL_QUANT_INDEX_SOURCE_ID,
-                    quant_observed_ids,
-                )
-                if quant_baseline:
-                    complete_source_baseline(
-                        conn,
-                        GLOBAL_QUANT_INDEX_SOURCE_ID,
-                        quant_stats.fetched,
-                    )
-    except Exception as e:
-        print(f"❌ Internship index pipeline error: {e}")
-        singapore_stats.errors.append(str(e))
+        entries = load_indexes()
+        for entry in entries:
+            stats = PipelineStats(entry["id"])
+            started = time.monotonic()
+            try:
+                with source_deadline():
+                    response = http_get(entry["url"])
+                jobs = (parse_singapore_internships(response.text) if entry["parser"] == "singapore"
+                        else parse_global_quant_internships(response.text))
+                if not jobs:
+                    raise ValueError("Index returned no parseable jobs; snapshot incomplete")
+                stats.fetched = len(jobs)
+                observed = set()
+                for parsed in jobs:
+                    external_id = parsed["external_id"]
+                    unique_id = f"{entry['id']}_{external_id}"
+                    observed.add(unique_id)
+                    if entry["parser"] == "singapore":
+                        job = {**parsed, "site": entry["id"], "source_id": entry["id"],
+                               "source_label": "Singapore Tech Internship Index", "location": "Singapore",
+                               "date_posted": parsed.get("date_added"), "date_label": "Index added"}
+                        if is_known_quant_company(job["company"]):
+                            job["source_tags"] = ["QUANT"]
+                    else:
+                        job = {**parsed, "source_id": entry["id"], "date_label": "Index added"}
+                        overseas_eligible(job, False, True)
+                    assessment = assess_eligibility(job["title"], job.get("description", ""))
+                    if assessment.verdict == "ineligible":
+                        stats.filtered_eligibility += 1
+                        continue
+                    # Existing observations remain silent. A new index queues unseen current opportunities.
+                    observe_job(conn, unique_id, entry["id"], external_id, job, stats, assessment)
+                if conn:
+                    # Indexes are discovery lists: omissions are not authoritative employer closures.
+                    complete_source_baseline(conn, entry["id"], stats.fetched)
+            except Exception as error:
+                if conn: conn.rollback()
+                stats.errors.append(str(error))
+                stats.complete = False
+            finally:
+                stats.duration_seconds = time.monotonic()-started
+                stats_list.append(stats)
     finally:
-        if conn is not None:
-            conn.close()
-    return [singapore_stats, quant_stats]
+        if conn: conn.close()
+    return stats_list
 
 
 def print_run_summary(stats_list: list[PipelineStats]) -> None:
@@ -2273,6 +2220,7 @@ def parse_args(argv=None):
         action="store_true",
         help="Send exactly one labeled alert through the database delivery queue",
     )
+    parser.add_argument("--group", choices=("official", "discovery", "maintenance", "all"), default="all")
     return parser.parse_args(argv)
 
 
@@ -2355,32 +2303,69 @@ def main(argv=None) -> int:
     if args.canary:
         return run_canary()
 
-    pipelines = [
-        scrape_registry_pipelines,
-        scrape_singapore_quant_pipeline,
-        scrape_internsg_pipeline,
-        run_pipeline,
-    ]
+    pipelines = []
+    if args.group in ("official", "all"):
+        pipelines.append(scrape_registry_pipelines)
+    if args.group in ("discovery", "all"):
+        pipelines.extend([scrape_singapore_quant_pipeline, scrape_internsg_pipeline, run_pipeline])
+    worker = None if DRY_RUN or args.group == "maintenance" else DeliveryWorker(deliver_pending_jobs)
+    if worker:
+        worker.start()
     stats_list = []
-    for pipeline in pipelines:
-        try:
-            pipeline_stats = pipeline()
-            if isinstance(pipeline_stats, list):
-                stats_list.extend(pipeline_stats)
-            else:
-                stats_list.append(pipeline_stats)
-        except Exception as e:
-            source = pipeline.__name__
-            print(f"❌ {source} failed: {e}")
-            stats_list.append(PipelineStats(source=source, errors=[str(e)]))
-
-    delivery_failures = 0
-    if not DRY_RUN:
-        try:
-            delivery_failures = deliver_pending_jobs()
-        except Exception as e:
-            print(f"❌ Delivery queue failed: {e}")
-            delivery_failures = 1
+    notes = []
+    try:
+        for pipeline in pipelines:
+            started = time.monotonic()
+            lease = None
+            try:
+                if not DRY_RUN:
+                    lease = get_db_connection()
+                    with lease.cursor() as cur:
+                        cur.execute("SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", ("pipeline:" + pipeline.__name__,))
+                        acquired = cur.fetchone()[0]
+                    lease.commit()
+                    if not acquired:
+                        stats_list.append(PipelineStats(pipeline.__name__, warnings=["Already running in another workflow"], complete=False))
+                        continue
+                if pipeline is scrape_internsg_pipeline:
+                    with source_deadline(180):
+                        pipeline_stats = pipeline()
+                else:
+                    pipeline_stats = pipeline()
+                items = pipeline_stats if isinstance(pipeline_stats, list) else [pipeline_stats]
+                if not isinstance(pipeline_stats, list):
+                    pipeline_stats.duration_seconds = time.monotonic()-started
+                stats_list.extend(items)
+                if not DRY_RUN and pipeline is not scrape_registry_pipelines:
+                    conn = get_db_connection()
+                    try:
+                        for stats in items:
+                            record_run(conn, stats)
+                    finally:
+                        conn.close()
+            except Exception as error:
+                stats_list.append(PipelineStats(pipeline.__name__, errors=[str(error)], complete=False))
+            finally:
+                if lease:
+                    lease.close()
+        if args.group in ("maintenance", "all"):
+            conn = None if DRY_RUN else get_db_connection()
+            try:
+                notes = run_maintenance(conn, http_request, load_policies())
+            finally:
+                if conn: conn.close()
+    finally:
+        if worker:
+            worker.finish()
+    delivery_failures = worker.failures + len(worker.errors) if worker else 0
+    if worker:
+        for error in worker.errors:
+            print(f"Delivery worker: {error}")
+    conn = None if DRY_RUN else get_db_connection()
+    try:
+        write_summary(stats_list, conn, notes)
+    finally:
+        if conn: conn.close()
 
     print_run_summary(stats_list)
     source_errors = sum(len(stats.errors) for stats in stats_list)

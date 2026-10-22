@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "indexes": [
+    {"id": "sg_tech_index", "url": "https://raw.githubusercontent.com/didtheyghostme/Singapore-Summer2026-TechInternships/main/README.md", "parser": "singapore", "recruiting_year": 2026, "enabled": true},
+    {"id": "global_quant_index", "url": "https://raw.githubusercontent.com/northwesternfintech/2027QuantInternships/main/README.md", "parser": "global_quant", "recruiting_year": 2027, "enabled": true}
+  ]
+}
