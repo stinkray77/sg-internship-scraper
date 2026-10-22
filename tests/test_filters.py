@@ -20,6 +20,31 @@ from main import (
 
 
 class SingaporeJobFilterTests(unittest.TestCase):
+    def test_title_variants_keep_technical_student_roles(self):
+        for title in (
+            "Full-stack Intern", "Front End Internship", "Back-end Intern",
+            "Machine-learning Intern", "IT Intern", "QA Internship", "SRE Intern",
+            "Software Engineering Internships", "Software Interns",
+            "Data Engineering Co op", "Data Engineering Co‑op",
+            "Technology Off–Cycle Analyst", "Software Industrial Attachments",
+        ):
+            with self.subTest(title=title):
+                self.assertTrue(is_target_role(title))
+
+    def test_title_variants_do_not_admit_unrelated_roles(self):
+        for title in (
+            "Full-stack Developer", "International Technology Sales",
+            "IT Sales Intern", "QA Marketing Intern", "AI Product-management Intern",
+            "Civil-engineering Intern", "Mechanical Engineering Internship",
+        ):
+            with self.subTest(title=title):
+                self.assertFalse(is_target_role(title))
+
+    def test_quant_title_variants(self):
+        for title in ("Full-stack Intern", "Software Internships", "Data Co‑op"):
+            with self.subTest(title=title):
+                self.assertTrue(is_quant_intern_role(title))
+
     def test_existing_title_filter_behavior(self):
         self.assertTrue(is_target_role("Software Engineer Intern"))
         self.assertTrue(is_target_role("Technology Summer Analyst"))
@@ -287,3 +312,4 @@ class QuantIndexTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
     parse_global_quant_internships,
+

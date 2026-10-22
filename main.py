@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 from source_adapters import fetch_source, load_source_registry
 from eligibility import EligibilityAssessment, assess_eligibility
+from role_patterns import STUDENT_ROLE_PATTERN, normalize_role_title
 from categories import CATEGORY_ORDER, classify_job_categories, primary_category
 
 # LOAD FIRST
@@ -1254,7 +1255,7 @@ def is_target_role(title: str) -> bool:
     Returns True if the job title matches your career targets (SWE/Quant).
     Returns False for irrelevant roles (HR, Sales, Marketing).
     """
-    title_lower = str(title or "").lower()
+    title_lower = normalize_role_title(title)
     
     strong_technical_pattern = (
         r"\b(software|swe|developer|programmer|machine learning|ml|backend|"
@@ -1285,7 +1286,7 @@ def is_target_role(title: str) -> bool:
         return False
 
     whitelist_pattern = (
-        r"\b(software|swe|developer|programmer|technology|"
+        r"\b(software|swe|it|qa|sre|developer|programmer|technology|"
         r"quant|quantitative|trading|trader|algorithm|algorithmic|researcher|"
         r"data|ai|genai|llm|machine learning|ml|backend|frontend|fullstack|"
         r"cloud|systems|platform|infrastructure|devops|security|computer vision|"
@@ -1299,12 +1300,7 @@ def is_target_role(title: str) -> bool:
     )
     has_target = bool(re.search(whitelist_pattern, title_lower))
 
-    student_role_pattern = (
-        r"\b(intern|internship|co-?op|industrial attachment|technical trainee|"
-        r"summer analyst|off-cycle analyst|winternship|spring insight|"
-        r"insight program(?:me)?|apprenticeship|traineeship|trainee|"
-        r"accelerator program(?:me)?)\b"
-    )
+    student_role_pattern = STUDENT_ROLE_PATTERN
     is_intern = bool(re.search(student_role_pattern, title_lower))
 
     return has_target and is_intern
@@ -1312,17 +1308,12 @@ def is_target_role(title: str) -> bool:
 
 def is_quant_intern_role(title: str) -> bool:
     """Return whether a title is a technical internship at a quant firm."""
-    title_lower = str(title or "").lower()
+    title_lower = normalize_role_title(title)
     blacklist_pattern = r"\b(sales|marketing|hr|human resources|accounting|retail|design)\b"
     if re.search(blacklist_pattern, title_lower):
         return False
 
-    student_role_pattern = (
-        r"\b(intern|internship|co-?op|industrial attachment|technical trainee|"
-        r"summer analyst|off-cycle analyst|winternship|spring insight|"
-        r"insight program(?:me)?|apprenticeship|traineeship|trainee|"
-        r"accelerator program(?:me)?)\b"
-    )
+    student_role_pattern = STUDENT_ROLE_PATTERN
     if not re.search(student_role_pattern, title_lower):
         return False
 
@@ -2390,3 +2381,4 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
