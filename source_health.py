@@ -7,14 +7,14 @@ from psycopg2.extras import Json
 
 
 def migrate_health_schema(cur):
-    cur.execute('''CREATE TABLE IF NOT EXISTS source_runs (
+    cur.execute('''CREATE TABLE IF NOT EXISTS scraper_source_runs (
         run_id BIGSERIAL PRIMARY KEY, source_id TEXT NOT NULL,
         completed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
         duration_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
         fetched INTEGER NOT NULL, matched INTEGER NOT NULL, queued INTEGER NOT NULL,
         complete BOOLEAN NOT NULL, errors JSONB NOT NULL, warnings JSONB NOT NULL,
         rejections JSONB NOT NULL)''')
-    cur.execute('CREATE INDEX IF NOT EXISTS source_runs_recent_idx ON source_runs(source_id, completed_at DESC)')
+    cur.execute('CREATE INDEX IF NOT EXISTS scraper_source_runs_recent_idx ON scraper_source_runs(source_id, completed_at DESC)')
     cur.execute('''CREATE TABLE IF NOT EXISTS employer_candidates (
         company_key TEXT PRIMARY KEY, company TEXT NOT NULL, careers_url TEXT,
         verification TEXT NOT NULL DEFAULT 'unverified', evidence_url TEXT,
@@ -41,13 +41,13 @@ def health_warnings(history, now=None):
 
 def record_run(conn, stats):
     with conn.cursor() as cur:
-        cur.execute('''INSERT INTO source_runs(source_id,duration_seconds,fetched,matched,queued,complete,errors,warnings,rejections)
+        cur.execute('''INSERT INTO scraper_source_runs(source_id,duration_seconds,fetched,matched,queued,complete,errors,warnings,rejections)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
             (stats.source, stats.duration_seconds, stats.fetched, stats.matched, stats.queued,
              stats.complete and not stats.errors, Json(stats.errors), Json(stats.warnings),
              Json({'role':stats.filtered_role,'location_or_visa':stats.filtered_location,'eligibility':stats.filtered_eligibility})))
-        cur.execute('DELETE FROM source_runs WHERE completed_at < CURRENT_TIMESTAMP - INTERVAL \'90 days\'')
-        cur.execute('''SELECT completed_at,fetched,matched,errors FROM source_runs
+        cur.execute('DELETE FROM scraper_source_runs WHERE completed_at < CURRENT_TIMESTAMP - INTERVAL \'90 days\'')
+        cur.execute('''SELECT completed_at,fetched,matched,errors FROM scraper_source_runs
             WHERE source_id=%s ORDER BY completed_at DESC LIMIT 30000''',(stats.source,))
         history=[dict(zip(('completed_at','fetched','matched','errors'),r)) for r in cur.fetchall()]
     conn.commit()

@@ -82,7 +82,7 @@ class PostgresTests(unittest.TestCase):
             report = write_summary([stats], conn)
             self.assertIn('Employer coverage', report)
             with conn.cursor() as cur:
-                cur.execute('SELECT count(*) FROM source_runs')
+                cur.execute('SELECT count(*) FROM scraper_source_runs')
                 self.assertEqual(cur.fetchone()[0], 1)
 
     def test_eligibility_transition_alerts_once_and_does_not_close_presence(self):
@@ -95,6 +95,28 @@ class PostgresTests(unittest.TestCase):
             with conn.cursor() as cur:
                 cur.execute('SELECT count(*) FROM seen_jobs')
                 self.assertEqual(cur.fetchone()[0], 1)
+
+    def test_legacy_source_runs_table_is_preserved(self):
+        # Exact legacy column names, types and required fields observed in production.
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute('DROP TABLE scraper_source_runs')
+                cur.execute("""CREATE TABLE source_runs (
+                    id SERIAL PRIMARY KEY, source TEXT NOT NULL, started_at TEXT NOT NULL,
+                    finished_at TEXT, status TEXT NOT NULL, result_count INTEGER DEFAULT 0,
+                    error TEXT)""")
+                cur.execute("""INSERT INTO source_runs(source,started_at,status,result_count)
+                    VALUES ('legacy-source','2026-01-01T00:00:00','success',7)""")
+        main.init_db()
+        main.init_db()
+        from source_health import record_run
+        with self.connection() as conn:
+            record_run(conn, main.PipelineStats('new-source', fetched=2, matched=1))
+            with conn.cursor() as cur:
+                cur.execute('SELECT source,started_at,status,result_count FROM source_runs')
+                self.assertEqual(cur.fetchall(), [('legacy-source','2026-01-01T00:00:00','success',7)])
+                cur.execute('SELECT source_id,fetched,matched FROM scraper_source_runs')
+                self.assertEqual(cur.fetchall(), [('new-source',2,1)])
 
 if __name__ == '__main__':
     unittest.main()
