@@ -1,262 +1,170 @@
-# sg-internship-scraper
+# Singapore and sponsored overseas internship scraper
 
-Twice-hourly Singapore internship scraper that finds CS, software engineering, data, AI/ML, and quant internship roles, deduplicates them in PostgreSQL, and sends new matches to Telegram.
+Finds technical student opportunities across employer boards, JobSpy, InternSG,
+and configured internship indexes. PostgreSQL stores observations, opportunity
+identities, delivery history, source health and discovery candidates. Telegram
+receives new opportunities and reopenings.
 
-## What It Scrapes
+## Coverage
 
-The scraper combines broad discovery with configurable official sources:
+The registry includes the original employers and **12 additional validated public
+boards**: Schonfeld, ExodusPoint, Marshall Wace, AQR, ServiceNow, Databricks,
+Datadog, Cloudflare, Palantir, Canva, Wise and Nium.
 
-- Three focused JobSpy searches over LinkedIn, Indeed, and Glassdoor
-- InternSG IT internship listings
-- Greenhouse, Lever, SmartRecruiters, Workday, and Ashby company boards
-- Public career pages for selected finance and trading employers
-- The complete verified Singapore technology internship index
-- Active global technical roles from the Northwestern FinTech quant internship index
+[employers.json](employers.json) records a live audit of **50 additional employers**
+(25 funds and 25 technology employers), including verification timestamps,
+careers URLs and coverage gaps. `direct monitoring` means a structured board was
+validated; `discovery only` means public career information was reachable but a
+direct adapter was not validated; `unavailable` records blocked or failed access.
+Neither registry membership nor discovery coverage guarantees that every job is
+found. The audit is a dated snapshot, not a continuously verified coverage claim.
 
-Company sources are declared in `sources.json`. Each entry specifies the employer,
-adapter, public board configuration, aliases, and whether direct scraping is enabled.
-The registry includes trading firms, banks, asset managers, exchanges, fintechs,
-and the original technology companies.
+`sources.json` configures Greenhouse, Lever, SmartRecruiters, Workday, Ashby,
+Workable, structured JobPosting pages and explicitly configured HTML selectors.
+New domains are never automatically enabled. Daily maintenance reports unfamiliar
+employers seen by aggregators and checks available company links for careers
+pages; source adapters still require verification before onboarding.
 
-The bespoke registry tracks Jane Street, Citadel/Citadel Securities, IMC, Jump,
-SIG, Squarepoint, AlphaGrep, Quantedge, Dynamic Technology Lab, and SGX. Sources
-that block free HTTP access or require a JavaScript browser are marked
-`discovery_only` and remain covered by JobSpy and the GitHub indexes.
+Saved board responses and a benchmark of 30 timestamped real postings live in
+`tests/fixtures`. Positive sponsorship parser cases are tested separately; the
+benchmark does not claim that its overseas technology jobs provide sponsorship.
 
-## How It Works
+## Matching and overseas opportunities
 
-1. Load environment variables from `.env` or GitHub Actions secrets.
-2. Create or migrate the delivery and lifecycle tables.
-3. Fetch official sources with at most four workers, then process database writes sequentially.
-4. Filter technical student roles, merge cross-site duplicates, and classify
-   description-based eligibility.
-5. Record each job observation and lifecycle event in PostgreSQL.
-6. Atomically enqueue only new or reopened jobs for Telegram delivery.
-7. Reconcile complete official ATS snapshots and close jobs after three clean misses.
-8. Deliver due alerts to Telegram and persist success or retry state.
-9. Print per-source fetched, matched, queued, duplicate, warning, and error counts.
+- Technical student titles support spelling, spacing and Unicode dash variants,
+  including full-stack, IT/QA/SRE, co-op and industrial attachment.
+- Ambiguous student titles such as Summer Analyst require a technical task in the
+  description. Generic technology or Excel mentions alone are insufficient.
+- Explicit postgraduate-only requirements remain excluded. Unknown descriptions
+  do not exclude otherwise clear technical titles.
+- Singapore roles remain eligible. Overseas quant technical internships remain
+  broadly eligible, with unknown visa support labeled clearly.
+- Other overseas technical internships require explicit visa support in the role
+  or a verified, applicable internship programme policy. Relocation funding or
+  immigration assistance alone does not establish sponsorship.
+- Benefits retain evidence excerpts, official source links, verification dates
+  and scope. Posting restrictions override general policies; conditional support
+  is labeled conditional. Support availability is not a visa approval guarantee.
 
-Title filtering requires a technical keyword and a student-role term. Supported
-terms include internship, co-op, industrial attachment, trainee, summer analyst,
-off-cycle analyst, winternship, insight programme, apprenticeship, and accelerator
-programme. Non-target roles such as sales, marketing, HR, accounting, product or
-project management, retail, and design are excluded. Explicit postgraduate-only
-roles are rejected, while inclusive bachelor/master/PhD postings remain eligible.
-Graduation years, internship duration, and work-authorization language are
-extracted for display but do not hide a job.
+`support_policies.json` starts empty rather than assuming firm-wide benefits.
+A configured programme policy needs `id`, `company`, an official HTTPS `url`,
+a `programme_marker`, regex `programme_terms`, and optional `offices`.
+Maintenance checks the marker and re-extracts support weekly. Policies with no
+successful verification within 30 days cannot qualify new overseas non-quant
+alerts. Citadel and Citadel Securities must be researched separately; no Sydney
+or Hong Kong benefit is inferred simply from the employer name.
 
-Title matching normalizes hyphens, Unicode dashes, and spacing, including
-front-end, back-end, full-stack, machine-learning, and co-op variants. Plural
-student titles and IT, QA, and SRE internships are supported. The same student
-vocabulary is used when deciding which official posting details to retrieve.
+## Delivery and timing
 
-Location filtering accepts explicit `Singapore` or `SG` metadata. A blank or
-generic location returned by a Singapore-scoped JobSpy query is retained as
-`[Inference] Singapore, from search scope`; an explicitly foreign non-quant
-location is rejected. Technical student roles from known quant sources are
-eligible globally. Visa sponsorship and relocation support are reported only
-when the posting states them.
+Official boards are processed as they finish. A separate worker checks committed
+queue entries every five seconds while scraping continues. Database locks
+serialize delivery across workflows and preserve atomic claims and retries.
 
-Ashby secondary offices and Workday additional locations are checked alongside
-the primary office. Workday technical student postings are inspected even when
-their summary says only `Multiple Locations`. Greenhouse requests description
-content explicitly for eligibility assessment.
+Official sources are scheduled every ten minutes, discovery sources every thirty
+minutes, and maintenance daily. GitHub Actions scheduling and source response
+times are best-effort; the schedule is not a ten-minute delivery guarantee.
+The operational target is delivery within 15 seconds of enqueueing when Telegram
+is healthy and quiet hours are inactive.
 
-The Singapore index is trusted for its declared technology, internship, and
-location scope, while explicit postgraduate-only roles remain excluded. The
-global quant index supplies current application links and firm-level locations;
-those locations are labeled unverified. Company aliases and containment matching
-handle variants such as Tower Research Capital and QRT.
+**Quiet hours remain 00:00–07:59 Singapore time.** Overnight jobs wait for the
+existing category-grouped digest from 08:00. Daytime discoveries are immediate.
+Newly enabled sources send their current unseen eligible jobs using the same
+quiet hours, deduplication and Telegram rate limits.
 
-Official open postings are not discarded based on age. On first enabling a board,
-each current match alerts once, after which PostgreSQL deduplication suppresses it.
-JobSpy retains a 72-hour overlap window and requests 50 results per site and
-query shard by default. It merges duplicate copies before filtering and prefers
-direct employer URLs and explicit location metadata. Paginated adapters enforce
-finite page limits.
+Cards include source-grounded responsibility excerpts, skills, dates and overseas
+support evidence. Missing facts are not invented. First-seen times use Singapore
+time; posting, employer-update and index-added dates are distinguished. Digests
+remain compact, and optional excerpts are trimmed to meet Telegram limits.
 
-Official sources run before aggregators so cross-source deduplication retains the
-official application URL when both sources find the same company and title.
+## Setup and commands
 
-## Requirements
-
-- Python 3.10+
-- PostgreSQL database
-- Telegram bot token
-- Telegram chat ID
-
-Install Python dependencies:
+Python 3.10+, PostgreSQL and a Telegram bot/chat are required for live operation.
 
 ```bash
-pip install -r requirements.txt
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
-## Environment Variables
-
-Create a local `.env` file with:
+Required live environment variables:
 
 ```env
-DATABASE_URL=postgresql://user:password@host:port/dbname
-TELEGRAM_TOKEN=your_telegram_bot_token
+DATABASE_URL=postgresql://user:password@host:5432/database
+TELEGRAM_TOKEN=your_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
-JOB_LOOKBACK_HOURS=72
-RESULTS_PER_SOURCE=50
-DELIVERY_TIMEZONE=Asia/Singapore
-QUIET_HOURS_START=0
-QUIET_HOURS_END=8
-DIGEST_MAX_JOBS=8
 ```
 
-The first three values are required for live runs. The remaining settings are
-optional. The same required names are used as GitHub Actions secrets.
-
-## Running Locally
-
-From the repository root:
+Optional settings: `JOB_LOOKBACK_HOURS=72`, `RESULTS_PER_SOURCE=50`,
+`DELIVERY_TIMEZONE=Asia/Singapore`, `QUIET_HOURS_START=0`, `QUIET_HOURS_END=8`,
+and `DIGEST_MAX_JOBS=8`. Equal quiet-hour start/end disables quiet hours.
 
 ```bash
-source venv/bin/activate
-python main.py
+# Read-only network checks: no database writes or Telegram sends.
+.venv/bin/python main.py --dry-run --group official
+.venv/bin/python main.py --dry-run --group discovery
+.venv/bin/python main.py --dry-run --group maintenance
+
+# Live operation; creates/migrates tables, records jobs and may send alerts.
+.venv/bin/python main.py --group official
+.venv/bin/python main.py --group discovery
+.venv/bin/python main.py --group maintenance
+.venv/bin/python main.py --group all
+
+# Exactly one labeled database/Telegram canary; skips scraping.
+.venv/bin/python main.py --canary
 ```
 
-Or without activating the virtual environment:
+The default group is `all`. Manual GitHub Actions runs default to dry-run.
+Official cron: `7,17,27,37,47,57 * * * *`; discovery: `12,42 * * * *`;
+maintenance: `32 3 * * *` (all UTC).
+
+## Identity, migration and lifecycle
+
+Application URLs and employer-scoped requisition IDs map source observations to
+canonical opportunities. Distinct requisitions and conflicting application URLs
+are preserved, even with identical titles. Matching without a strong identifier
+is conservative. Exact historical JobSpy IDs/URLs preserve legacy observations.
+
+Migrations are additive and idempotent. They backfill identity aliases while
+preserving existing job IDs, sent status, pending deliveries and lifecycle events.
+Migration itself sends nothing. Existing index/source baselines are not reset.
+Changing code or schedules provides rollback without deleting delivery history.
+
+Only complete authoritative employer snapshots can infer closure after three
+successful misses. Pagination exhaustion, request failures and discovery-index
+omissions cannot close jobs. Presence is recorded separately from alert eligibility;
+a role that becomes sponsored can alert once without masquerading as a reopened
+posting. Description changes update observations without new-job alerts.
+
+Telegram retries are persisted with bounded attempts and rate-limit handling.
+Telegram offers no idempotency key, so an ambiguous send timeout can still cause
+a rare duplicate on retry.
+
+## Health, freshness and tests
+
+GitHub Actions summaries show source counts, durations, coverage gaps, rejection
+counts, operational warnings and immediate queue-to-send latency. Source history
+is retained for 90 days. Warnings cover three consecutive failures, three empty
+fetches after recent positive coverage, and seven days without matches after
+previously producing them. No operational Telegram messages are added.
+
+`indexes.json` stores explicit URLs, stable source IDs, parser types and recruiting
+years. Maintenance checks file commit dates daily and flags expired years or 30
+days without changes. Replacement URLs require fetching/parsing validation;
+the scraper never guesses a next-year URL. Freshness warnings do not remove jobs.
+
+The test workflow runs unit/fixture tests and a disposable PostgreSQL 17 service.
+To run integration tests locally, supply a **disposable** database:
 
 ```bash
-venv/bin/python main.py
+TEST_DATABASE_URL=postgresql://user:password@localhost/test_database \
+  .venv/bin/python -m unittest discover -s tests/integration -v
 ```
 
-Running the script performs live network requests, writes to the configured database, and may send Telegram messages.
+Integration tests drop and recreate the `scraper_test` schema. They cover migration
+idempotency, historical delivery preservation, concurrent enqueueing, queue claims,
+source-health SQL and transitions from ineligible to eligible observations.
 
-To inspect current matches without database or Telegram access:
-
-```bash
-venv/bin/python main.py --dry-run
-```
-
-Dry-run still performs live read-only requests, but it does not initialize the database, enqueue jobs, retry alerts, or call Telegram.
-
-To validate the real database and Telegram path with exactly one labeled message:
-
-```bash
-venv/bin/python main.py --canary
-```
-
-Canary mode skips every scraper, enqueues a timestamped `[CANARY]` row, claims
-only that row, and verifies that PostgreSQL records it as `sent`. It cannot flush
-other pending alerts.
-
-## GitHub Actions
-
-The workflow in `.github/workflows/scraper.yml` runs tests and then runs the scraper twice per hour, at minutes 17 and 47:
-
-```yaml
-cron: '17,47 * * * *'
-```
-
-It can also be run manually from the GitHub Actions UI through
-`workflow_dispatch`. Manual runs offer `dry-run`, `canary`, and `live`, defaulting
-to `dry-run`; scheduled runs are always live.
-Runs share a concurrency group and have a 30-minute timeout, preventing scheduled and manual executions from overlapping.
-
-The workflow uses standard GitHub-hosted Linux runners and no paid scraping
-service. Standard runners are free for public repositories. Database-provider
-free-tier limits remain provider-specific.
-
-Required GitHub repository secrets:
-
-- `DATABASE_URL`
-- `TELEGRAM_TOKEN`
-- `TELEGRAM_CHAT_ID`
-
-Optional delivery configuration:
-
-- `DELIVERY_TIMEZONE` defaults to `Asia/Singapore`.
-- `QUIET_HOURS_START` defaults to `0` and is inclusive.
-- `QUIET_HOURS_END` defaults to `8` and is exclusive.
-- `DIGEST_MAX_JOBS` defaults to `8` and must be between 1 and 8.
-
-Jobs found from 00:00 through 07:59 Singapore time are held for a compact
-category-grouped digest. The first workflow run at or after 08:00 sends due
-digest batches before individual daytime alerts. Jobs found from 08:00 through
-23:59 remain immediate. Setting the quiet-hours start and end to the same hour
-disables digest scheduling.
-
-## Database
-
-The scraper creates this table automatically:
-
-```sql
-CREATE TABLE IF NOT EXISTS seen_jobs (
-    job_id TEXT PRIMARY KEY,
-    company TEXT,
-    title TEXT,
-    site TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    payload JSONB,
-    dedupe_key TEXT,
-    delivery_status TEXT NOT NULL DEFAULT 'sent',
-    attempt_count INTEGER NOT NULL DEFAULT 0,
-    last_attempt_at TIMESTAMP,
-    next_attempt_at TIMESTAMP,
-    sent_at TIMESTAMP,
-    last_error TEXT,
-    delivery_mode TEXT NOT NULL DEFAULT 'immediate'
-);
-```
-
-`job_id` is source-prefixed, for example `greenhouse_12345` or `internsg_some-role-slug`.
-Existing databases are migrated automatically with `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, and existing rows remain treated as successfully sent.
-
-New alerts move through `pending`, `sending`, `failed`, `sent`, or `dead`. The
-`delivery_mode` is fixed to `immediate` or `digest` when a row is enqueued, and
-existing rows migrate to `immediate`. Separate atomic claims prevent daytime
-workers from taking digest rows early. Failed alerts retry up to five times with
-exponential backoff. A delivery left in `sending` for more than 30 minutes is
-eligible for recovery.
-
-Every lifecycle payload stores all matching role categories in the fixed order
-`QUANT`, `AI/ML`, `DATA`, `SWE`, then `TECH` as the fallback. A role is `QUANT`
-when its title is quant-specific or its official source is tagged as a known
-quant firm. Digest jobs are displayed once under their first category while all
-their tags remain visible.
-
-Lifecycle state is separate from delivery state:
-
-- `job_observations` stores the latest normalized payload, structured eligibility,
-  fingerprint, active/closed state, timestamps, and successful-snapshot misses.
-- `job_lifecycle_events` records append-only `backfilled`, `new`, `updated`,
-  `closed`, and `reopened` transitions.
-
-Existing non-canary queue rows are backfilled silently. New and reopened jobs send
-detailed Telegram cards; updates and closures are recorded without alerts. Only
-registry sources explicitly marked `lifecycle_mode: snapshot` can close jobs.
-Limited-window and bespoke sources update their last-seen state but never infer
-that a missing job has closed.
-
-`source_sync_state` tracks coverage versions for newly enabled indexes and global
-quant sources. Their first complete fetch is stored silently, preventing a large
-one-time alert burst. Later additions and reopenings alert normally.
-
-## Current Limitations
-
-- Eligibility descriptions use conservative deterministic parsing. Ambiguous
-  requirements remain `unknown` rather than being rejected.
-- Sources without a usable description remain eligible with an unknown verdict.
-- Location accuracy depends on metadata supplied by each job source.
-- Global quant index locations describe the firm and may not identify the exact
-  office for every linked role; Telegram labels them as unverified.
-- GitHub indexes are discovery sources and may still lag official company career pages.
-- Some scrapers depend on external HTML or third-party APIs that may change.
-- Bespoke sources without stable free HTTP access fall back to discovery sources rather than CAPTCHA bypasses, paid proxies, or browser automation.
-- JobSpy controls some network behavior internally, outside the shared HTTP retry
-  client. Partial site failures and saturated query shards are reported as warnings.
-- Telegram has no idempotency key. Retrying an ambiguous timeout prioritizes not losing an alert, but can rarely produce a duplicate.
-
-## Main Entry Point
-
-```bash
-python main.py
-```
-
-The script runs all configured pipelines in sequence.
-
+Shared HTTP requests have global/per-host concurrency limits and source deadlines.
+JobSpy calls run in subprocesses with a 120-second shard timeout. External sites
+can still change, block requests or omit descriptions; those gaps are reported.

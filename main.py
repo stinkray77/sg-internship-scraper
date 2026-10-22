@@ -27,7 +27,7 @@ from source_adapters import fetch_source, load_source_registry
 from eligibility import EligibilityAssessment, assess_eligibility
 from role_patterns import STUDENT_ROLE_PATTERN, normalize_role_title
 from delivery_worker import DeliveryWorker, DELIVERY_LOCK
-from http_limits import source_deadline, request_slot
+from http_limits import source_deadline, request_slot, BoundedRetry
 from source_health import migrate_health_schema, record_run, record_candidate, write_summary
 from maintenance import load_indexes, run_maintenance, policy_cache
 from job_content import extract_content, ambiguous_technical_student, overseas_eligible, load_policies
@@ -176,7 +176,7 @@ class LifecycleOutcome:
 
 
 def build_http_session() -> requests.Session:
-    retry = Retry(
+    retry = BoundedRetry(
         total=1,
         connect=1,
         read=1,
@@ -1176,10 +1176,13 @@ def fail_delivery(
     job_id: str,
     attempt_count: int,
     error: str,
+    retry_after_seconds: int | None = None,
 ) -> str:
     terminal = attempt_count >= MAX_DELIVERY_ATTEMPTS
     status = "dead" if terminal else "failed"
     delay_minutes = min(15 * (2 ** max(attempt_count - 1, 0)), 360)
+    if retry_after_seconds is not None:
+        delay_minutes = max(delay_minutes, (retry_after_seconds + 59) // 60)
     cur = conn.cursor()
     try:
         cur.execute(
@@ -1246,6 +1249,7 @@ def build_digest_message(jobs: list[dict]) -> str:
 
 
 def _send_with_rate_limit(send, label: str) -> DeliveryResult:
+    deadline = time.monotonic() + 45
     result = send()
     rate_limit_retries = 0
     while (
@@ -1254,6 +1258,8 @@ def _send_with_rate_limit(send, label: str) -> DeliveryResult:
         and rate_limit_retries < MAX_TELEGRAM_RATE_LIMIT_RETRIES
     ):
         wait_seconds = result.retry_after_seconds + TELEGRAM_RETRY_BUFFER_SECONDS
+        if time.monotonic() + wait_seconds + TELEGRAM_TIMEOUT_SECONDS > deadline:
+            return result
         rate_limit_retries += 1
         print(
             f"⏳ Telegram rate limit for {label}; waiting {wait_seconds}s before "
@@ -1302,6 +1308,7 @@ def deliver_pending_jobs(only_job_id: str | None = None) -> int:
                         job_id,
                         attempt_count,
                         result.error or "Unknown Telegram digest failure",
+                        retry_after_seconds=result.retry_after_seconds,
                     )
                     print(f"⚠️ Digest delivery {job_id} marked {status}.")
 
@@ -1324,6 +1331,7 @@ def deliver_pending_jobs(only_job_id: str | None = None) -> int:
                     job_id,
                     attempt_count,
                     result.error or "Unknown Telegram failure",
+                    retry_after_seconds=result.retry_after_seconds,
                 )
                 print(f"⚠️ Delivery {job_id} marked {status}.")
     finally:
@@ -1907,7 +1915,7 @@ def run_pipeline():
 
 def _fetch_source_timed(source):
     started = time.monotonic()
-    with source_deadline():
+    with source_deadline(90):
         result = fetch_source(source, http_request)
     return result, time.monotonic() - started
 

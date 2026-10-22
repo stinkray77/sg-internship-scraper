@@ -3,6 +3,7 @@ import contextlib
 import threading
 import time
 from urllib.parse import urlsplit
+from urllib3.util.retry import Retry
 
 GLOBAL = threading.BoundedSemaphore(4)
 HOSTS = {}
@@ -32,3 +33,14 @@ def request_slot(url):
         try: yield min(20, remaining())
         finally: GLOBAL.release()
     finally: host.release()
+
+
+class BoundedRetry(Retry):
+    def sleep(self, response=None):
+        delay = self.get_retry_after(response) if response is not None and self.respect_retry_after_header else None
+        delay = delay if delay is not None else self.get_backoff_time()
+        deadline = getattr(CONTEXT, 'deadline', None)
+        if delay > 30 or (deadline is not None and time.monotonic() + delay >= deadline):
+            raise TimeoutError('Retry delay exceeds source budget; try on next scheduled run')
+        if delay > 0:
+            time.sleep(delay)
