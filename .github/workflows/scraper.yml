@@ -11,7 +11,7 @@ on:
         required: true
         default: dry-run
         type: choice
-        options: [dry-run, canary, live]
+        options: [dry-run, canary, live, schema]
       group:
         description: Sources to run
         required: true
@@ -47,7 +47,9 @@ jobs:
           REQUESTED_MODE: ${{ inputs.mode }}
           REQUESTED_GROUP: ${{ inputs.group }}
         run: |
-          if [ "$EVENT_NAME" = schedule ]; then
+          if [ "$REQUESTED_MODE" = schema ]; then
+            python schema_diagnostic.py
+          elif [ "$EVENT_NAME" = schedule ]; then
             case "$EVENT_SCHEDULE" in
               '7,17,27,37,47,57 * * * *') group=official ;;
               '12,42 * * * *') group=discovery ;;
