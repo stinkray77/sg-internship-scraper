@@ -29,6 +29,7 @@ class JobCandidate:
         return {
             "site": self.source_id,
             "source_id": self.source_id,
+            "external_id": self.external_id,
             "company": self.company,
             "company_key": self.company_key or self.company,
             "title": self.title,
@@ -49,6 +50,7 @@ class SourceFetchResult:
     fetched: int = 0
     error: str | None = None
     warnings: list[str] = field(default_factory=list)
+    complete: bool = True
 
 
 REQUIRED_SOURCE_FIELDS = {"id", "company", "adapter", "enabled", "config"}
@@ -59,6 +61,8 @@ SUPPORTED_ADAPTERS = {
     "workday",
     "ashby",
     "bespoke",
+    "workable",
+    "html",
 }
 
 
@@ -108,7 +112,7 @@ def validate_source_registry(sources: list[dict]) -> None:
         lifecycle_mode = source.get("lifecycle_mode", "seen_only")
         if lifecycle_mode not in {"seen_only", "snapshot"}:
             raise ValueError(f"invalid lifecycle mode for {source_id}")
-        if lifecycle_mode == "snapshot" and source["adapter"] == "bespoke":
+        if lifecycle_mode == "snapshot" and source["adapter"] in {"bespoke", "html", "workable"}:
             raise ValueError(
                 f"bespoke source {source_id} cannot claim a complete snapshot"
             )
@@ -162,6 +166,8 @@ def fetch_source(source: dict, requester) -> SourceFetchResult:
                 "lever": fetch_lever,
                 "ashby": fetch_ashby,
                 "bespoke": fetch_bespoke,
+                "html": fetch_html,
+                "workable": fetch_workable,
             }[adapter](source, requester)
         return SourceFetchResult(source["id"], candidates, fetched, warnings=warnings)
     except Exception as error:
@@ -205,6 +211,8 @@ def fetch_lever(source: dict, requester):
         jobs.extend(page)
         if len(page) < 100:
             break
+    else:
+        raise ValueError("Lever pagination limit reached; snapshot incomplete")
     candidates = []
     for job in jobs:
         categories = job.get("categories") or {}
@@ -216,7 +224,7 @@ def fetch_lever(source: dict, requester):
             location=categories.get("allLocations") or categories.get("location"),
             country=job.get("country"),
             date_posted=job.get("createdAt"),
-            description=job.get("descriptionPlain") or job.get("description") or "",
+            description=" ".join([job.get("descriptionPlain") or job.get("description") or "", *[str(item.get("content") or "") for item in job.get("lists") or []], job.get("additionalPlain") or job.get("additional") or ""]),
         ))
     return candidates, len(jobs)
 
@@ -239,6 +247,8 @@ def fetch_smartrecruiters(source: dict, requester, warnings=None):
         offset += len(content)
         if not content or offset >= page.get("totalFound", offset):
             break
+    else:
+        raise ValueError("SmartRecruiters pagination limit reached; snapshot incomplete")
     candidates = []
     warnings = warnings if warnings is not None else []
     for job in jobs:
@@ -302,6 +312,8 @@ def fetch_workday(source: dict, requester, warnings=None):
         offset += len(postings)
         if not postings or offset >= page.get("total", offset):
             break
+    else:
+        raise ValueError("Workday pagination limit reached; snapshot incomplete")
 
     candidates = []
     for job in jobs:
@@ -478,17 +490,39 @@ def _looks_like_singapore(value) -> bool:
 
 def _looks_like_student_technical(title: str) -> bool:
     title = normalize_role_title(title)
-    return bool(
-        re.search(STUDENT_ROLE_PATTERN, title, re.I)
-        and re.search(
-            r"\b(software|technology|engineer|engineering|developer|data|quant|quantitative|trading|"
-            r"research|machine learning|ml|ai|security|infrastructure|risk|it|qa|sre|"
-            r"backend|frontend|fullstack|cloud|systems|platform|devops|cybersecurity|"
-            r"computer vision|nlp|genai|llm|blockchain|reinforcement learning|robotics|"
-            r"firmware|embedded|database|automation|business intelligence|"
-            r"enterprise architecture|mobile|web|npu|gpu|model efficiency)\b",
-            title,
-            re.I,
-        )
-    )
+    return bool(re.search(STUDENT_ROLE_PATTERN, title, re.I)) and not bool(
+        re.search(r"\b(sales|marketing|hr|human resources|accounting|retail)\b", title))
 
+
+def fetch_workable(source, requester):
+    token = source['config']['token']
+    document = requester('GET', f'https://apply.workable.com/api/v1/widget/accounts/{token}').json()
+    jobs = document.get('jobs')
+    if not isinstance(jobs, list):
+        raise ValueError('Workable response has no jobs list')
+    return [_candidate(source, j.get('shortcode') or j.get('id'), j.get('title'),
+                       j.get('url') or j.get('application_url'),
+                       location=[j.get('city'), j.get('country')],
+                       country=j.get('country_code'), description=j.get('description') or '',
+                       date_posted=j.get('published_on')) for j in jobs], len(jobs)
+
+
+def fetch_html(source, requester):
+    config = source['config']
+    response = requester('GET', config['url'])
+    soup = BeautifulSoup(response.text, 'html.parser')
+    rows = soup.select(config['row_selector'])
+    if not rows and not (config.get('empty_selector') and soup.select_one(config['empty_selector'])):
+        raise ValueError('HTML listing contract absent; no verified empty state')
+    result = []
+    for row in rows:
+        link = row.select_one(config['link_selector'])
+        if link is None or not link.get('href'):
+            raise ValueError('HTML job row has no application link')
+        def value(key):
+            element = row.select_one(config[key]) if config.get(key) else None
+            return element.get_text(' ', strip=True) if element else None
+        result.append(_candidate(source, None, value('title_selector') or link.get_text(' ', strip=True),
+                                 urljoin(config['url'], link['href']), location=value('location_selector'),
+                                 description=value('description_selector') or ''))
+    return result, len(rows)

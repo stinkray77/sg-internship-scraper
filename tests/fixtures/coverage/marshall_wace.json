@@ -1,0 +1,57 @@
+{
+  "adapter": "greenhouse",
+  "source_url": "https://boards-api.greenhouse.io/v1/boards/marshallwace/jobs?content=true",
+  "verified_at": "2026-10-22T06:50:41.188596+00:00",
+  "response": {
+    "jobs": [
+      {
+        "absolute_url": "https://job-boards.greenhouse.io/marshallwace/jobs/8879188002",
+        "data_compliance": [
+          {
+            "type": "gdpr",
+            "requires_consent": false,
+            "requires_processing_consent": false,
+            "requires_retention_consent": false,
+            "retention_period": null,
+            "demographic_data_consent_applies": false
+          }
+        ],
+        "education": "education_required",
+        "internal_job_id": 6555691002,
+        "location": {
+          "name": "New York"
+        },
+        "metadata": null,
+        "id": 8879188002,
+        "updated_at": "2026-10-08T11:44:51-04:00",
+        "requisition_id": "855",
+        "title": "2027 Summer Operations Intern",
+        "company_name": "Marshall Wace",
+        "first_published": "2026-10-08T11:44:51-04:00",
+        "language": "en",
+        "application_deadline": null,
+        "content": "&lt;p&gt;&lt;strong&gt;&lt;u&gt;&lt;/u&gt;&lt;/strong&gt;&lt;/p&gt;\n&lt;h3&gt;&lt;span style=&quot;text-decoration: underline;&quot;&gt;About Marshall Wace&lt;/span&gt;&lt;/h3&gt;\n&lt;p&gt;Marshall Wace is a leading provider of alternative investment solutions with over $90 billion in assets under management. Our global investment process operates around the clock, deploying capital across a diverse range of systematic and fundamental strategies. We have a track record of providing market leading returns for over 25 years.&lt;/p&gt;\n&lt;p&gt;Our success is underpinned by a perpetual effort to innovate and optimize upon our existing investment process, embracing sophisticated, proprietary technology and data sources at every level of the organization. Our small, but impactful group fosters a collegial culture that demands entrepreneurship and personal responsibility, presenting ample opportunity to employees for meaningful impact on our profitability.&lt;/p&gt;\n&lt;p&gt;&lt;strong&gt;&lt;u&gt;Our Intern Program&lt;/u&gt;&lt;/strong&gt;&lt;/p&gt;\n&lt;p&gt;Our 10 week Summer Intern Program includes the following:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;Business critical projects and problems to solve, with the opportunity to produce high-impact work&lt;/li&gt;\n&lt;li&gt;Highly personalized mentoring&lt;/li&gt;\n&lt;li&gt;Weekly lunch seminars with senior managers across all teams&lt;/li&gt;\n&lt;li&gt;Opportunities to participate in charitable events&lt;/li&gt;\n&lt;li&gt;Finance days hosted by other financial institutions&lt;/li&gt;\n&lt;li&gt;Social events&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;&amp;nbsp;&lt;/p&gt;\n&lt;p&gt;&lt;strong&gt;Operations Internship \u2013 Summer 2027&lt;/strong&gt;&lt;/p&gt;\n&lt;p&gt;We are seeking a self\u2011motivated undergraduate senior student who is passionate about learning, problem solving, and efficiency in the context of global financial markets. Based in New York, you will join our Global Operations team and contribute to a high\u2011volume, technology\u2011driven investment management environment. Interns gain a front\u2011row view of how operational excellence and automation underpin the success of a leading hedge fund, while delivering real value through both tactical work and dedicated projects.&lt;/p&gt;\n&lt;p&gt;&amp;nbsp;&lt;/p&gt;\n&lt;p&gt;&lt;strong&gt;Key Responsibilities&lt;/strong&gt;&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;Collaborate with a close\u2011knit, technical operations team to support the firm\u2019s activity across multiple markets and asset classes, including equities, credit, volatility, macro, and fixed income.&lt;/li&gt;\n&lt;li&gt;Build knowledge of core operational processes such as trade processing, securities lending, settlement, asset servicing, data management, and compliance.&lt;/li&gt;\n&lt;li&gt;Develop an understanding of how automation, data analytics, and AI\u2011driven solutions enable the firm to manage a high volume of global trading efficiently.&lt;/li&gt;\n&lt;li&gt;Use Python, SQL, and other programming tools to analyze and manipulate data, and contribute to automation and AI initiatives that enhance operational efficiency.&lt;/li&gt;\n&lt;li&gt;Identify workflow and system improvements and partner with the team to implement change.&lt;/li&gt;\n&lt;li&gt;Engage with colleagues across Trading, Investment Analysis, Risk, Treasury, and Compliance.&lt;/li&gt;\n&lt;li&gt;Attend seminars hosted by prime brokerage counterparties to learn how the buy side and sell side interact.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;&lt;strong&gt;&amp;nbsp;&lt;/strong&gt;&lt;/p&gt;\n&lt;p&gt;&lt;strong&gt;Qualifications&lt;/strong&gt;&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;Candidates graduating between December 2027 and June 2028.&lt;/li&gt;\n&lt;li&gt;Working toward a bachelor\u2019s degree in a related field such as (but not limited to) Finance, Economics, Computer Science, Mathematics, or Engineering.&lt;/li&gt;\n&lt;li&gt;Minimum cumulative GPA of 3.5.&lt;/li&gt;\n&lt;li&gt;Exceptional communication skills (verbal and written) and strong attention to detail.&lt;/li&gt;\n&lt;li&gt;Ability to manage time effectively and proactively engage with team members.&lt;/li&gt;\n&lt;li&gt;Demonstrated curiosity about financial markets and enthusiasm for data\u2011driven and AI\u2011enabled process improvement.&lt;/li&gt;\n&lt;/ul&gt;",
+        "departments": [
+          {
+            "id": 4002398002,
+            "name": "Operations",
+            "child_ids": [],
+            "parent_id": null
+          }
+        ],
+        "offices": [
+          {
+            "id": 4001077002,
+            "name": "New York",
+            "location": "New York, New York, United States",
+            "child_ids": [],
+            "parent_id": null
+          }
+        ],
+        "ai_disclaimer": null,
+        "include_ai_disclaimer": null,
+        "ai_opt_out_request_url": null
+      }
+    ]
+  }
+}
