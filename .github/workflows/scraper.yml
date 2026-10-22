@@ -1,55 +1,63 @@
-name: Twice-Hourly Job Scraper
-
+name: Internship Scraper
 on:
   schedule:
-    - cron: '17,47 * * * *'
+    - cron: '7,17,27,37,47,57 * * * *'
+    - cron: '12,42 * * * *'
+    - cron: '32 3 * * *'
   workflow_dispatch:
     inputs:
       mode:
-        description: Scraper mode for this manual run
+        description: Execution mode
         required: true
         default: dry-run
         type: choice
-        options:
-          - dry-run
-          - canary
-          - live
-
-concurrency:
-  group: twice-hourly-job-scraper
-  cancel-in-progress: false
-
+        options: [dry-run, canary, live]
+      group:
+        description: Sources to run
+        required: true
+        default: all
+        type: choice
+        options: [all, official, discovery, maintenance]
+permissions:
+  contents: read
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
+    concurrency:
+      group: scraper-${{ github.event.schedule || inputs.group || 'all' }}
+      cancel-in-progress: false
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v6
-        
-      - name: Setup Python
-        uses: actions/setup-python@v6
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.10'
-          
-      - name: Install Dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run Tests
-        run: python -m unittest discover -s tests -v
-        
-      - name: Run Scraper
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -q
+      - name: Run scraper
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           JOB_LOOKBACK_HOURS: '72'
           RESULTS_PER_SOURCE: '50'
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          REQUESTED_MODE: ${{ inputs.mode }}
+          REQUESTED_GROUP: ${{ inputs.group }}
         run: |
-          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.mode }}" = "live" ]; then
-            python main.py
-          elif [ "${{ inputs.mode }}" = "canary" ]; then
+          if [ "$EVENT_NAME" = schedule ]; then
+            case "$EVENT_SCHEDULE" in
+              '7,17,27,37,47,57 * * * *') group=official ;;
+              '12,42 * * * *') group=discovery ;;
+              *) group=maintenance ;;
+            esac
+            python main.py --group "$group"
+          elif [ "$REQUESTED_MODE" = canary ]; then
             python main.py --canary
+          elif [ "$REQUESTED_MODE" = live ]; then
+            python main.py --group "$REQUESTED_GROUP"
           else
-            python main.py --dry-run
+            python main.py --dry-run --group "$REQUESTED_GROUP"
           fi

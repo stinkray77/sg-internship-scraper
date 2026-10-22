@@ -31,3 +31,11 @@ class HealthTests(unittest.TestCase):
         source={'id':'html_test','company':'Firm','config':dict(url='https://example.com',row_selector='.job',link_selector='a')}
         requester=MagicMock(return_value=MagicMock(text='<html>Access denied</html>'))
         with self.assertRaises(ValueError):fetch_html(source,requester)
+
+    def test_long_rate_limit_defers_without_blocking_worker(self):
+        import main
+        from unittest.mock import patch
+        with patch('main.time.sleep') as sleep:
+            result=main._send_with_rate_limit(lambda:main.DeliveryResult(False,'rate limited',3600),'test')
+        self.assertEqual(result.retry_after_seconds,3600)
+        sleep.assert_not_called()

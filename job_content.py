@@ -18,7 +18,10 @@ def text_blocks(value):
     soup = BeautifulSoup(str(value or ''), 'html.parser')
     for tag in soup(['script', 'style', 'nav', 'footer']):
         tag.decompose()
-    text = soup.get_text('\n', strip=True)
+    for tag in soup.find_all(['p', 'li', 'div', 'section', 'br', 'h1', 'h2', 'h3']):
+        tag.insert_before('\n')
+        tag.insert_after('\n')
+    text = soup.get_text(' ', strip=False)
     blocks = re.split(r'\n+|(?<=[.!?])\s+', text)
     return [re.sub(r'\s+', ' ', b).strip() for b in blocks if b.strip()]
 

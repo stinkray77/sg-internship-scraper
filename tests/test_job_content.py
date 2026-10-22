@@ -45,3 +45,7 @@ class ContentTests(unittest.TestCase):
         self.assertEqual(content['responsibilities'], ['Develop software applications using Python and SQL.'])
         self.assertEqual(content['skills'], ['Python', 'SQL'])
         self.assertIn('30 November', content['application_deadline'])
+
+    def test_inline_html_does_not_split_sponsorship_evidence(self):
+        job=dict(location='Sydney',description='<p>Visa <b>sponsorship</b> is available.</p>')
+        self.assertTrue(overseas_eligible(job,False,False))
