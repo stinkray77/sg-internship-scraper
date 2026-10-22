@@ -45,12 +45,22 @@ roles are rejected, while inclusive bachelor/master/PhD postings remain eligible
 Graduation years, internship duration, and work-authorization language are
 extracted for display but do not hide a job.
 
+Title matching normalizes hyphens, Unicode dashes, and spacing, including
+front-end, back-end, full-stack, machine-learning, and co-op variants. Plural
+student titles and IT, QA, and SRE internships are supported. The same student
+vocabulary is used when deciding which official posting details to retrieve.
+
 Location filtering accepts explicit `Singapore` or `SG` metadata. A blank or
 generic location returned by a Singapore-scoped JobSpy query is retained as
 `[Inference] Singapore, from search scope`; an explicitly foreign non-quant
 location is rejected. Technical student roles from known quant sources are
 eligible globally. Visa sponsorship and relocation support are reported only
 when the posting states them.
+
+Ashby secondary offices and Workday additional locations are checked alongside
+the primary office. Workday technical student postings are inspected even when
+their summary says only `Multiple Locations`. Greenhouse requests description
+content explicitly for eligibility assessment.
 
 The Singapore index is trusted for its declared technology, internship, and
 location scope, while explicit postgraduate-only roles remain excluded. The
@@ -249,3 +259,4 @@ python main.py
 ```
 
 The script runs all configured pipelines in sequence.
+

@@ -83,6 +83,66 @@ class RegistryTests(unittest.TestCase):
 
 
 class StandardAdapterTests(unittest.TestCase):
+    def test_greenhouse_requests_description_content(self):
+        requester = MagicMock(return_value=response({"jobs": []}))
+        fetch_greenhouse(source("greenhouse", token="test"), requester)
+        self.assertEqual(requester.call_args.kwargs["params"], {"content": "true"})
+
+    def test_workday_resolves_singapore_in_multiple_locations(self):
+        listing = {"jobPostings": [{
+            "title": "Full-stack Internships",
+            "locationsText": "Multiple Locations",
+            "externalPath": "/job/London/Intern_JR-2",
+        }], "total": 1}
+        detail = {"jobPostingInfo": {
+            "location": "London",
+            "additionalLocations": ["Singapore", "Hong Kong"],
+            "jobDescription": "Open to Bachelor students",
+        }}
+        requester = MagicMock(side_effect=[response(listing), response(detail)])
+        candidates, _ = fetch_workday(source(
+            "workday", host="https://example.wd.test", tenant="test", site="Careers",
+        ), requester)
+        from main import is_singapore_job
+        self.assertTrue(is_singapore_job(candidates[0].to_payload()))
+        self.assertEqual(candidates[0].job_url,
+                         "https://example.wd.test/Careers/job/London/Intern_JR-2")
+
+    def test_workday_does_not_fetch_non_student_details(self):
+        listing = {"jobPostings": [{
+            "title": "Software Engineer", "locationsText": "Multiple Locations",
+            "externalPath": "/job/Engineer",
+        }], "total": 1}
+        requester = MagicMock(return_value=response(listing))
+        fetch_workday(source(
+            "workday", host="https://example.wd.test", tenant="test", site="Careers",
+        ), requester)
+        self.assertEqual(requester.call_count, 1)
+
+    def test_ashby_preserves_secondary_offices(self):
+        requester = MagicMock(return_value=response({"jobs": [{
+            "id": "multi", "title": "Software Intern", "location": "London",
+            "secondaryLocations": [{"location": "Singapore"}],
+            "jobUrl": "https://example.com/multi",
+        }]}))
+        candidates, _ = fetch_ashby(source("ashby", board="test"), requester)
+        from main import is_singapore_job
+        self.assertTrue(is_singapore_job(candidates[0].to_payload()))
+
+    def test_smartrecruiters_fetches_details_for_normalized_student_title(self):
+        listing = {"content": [{
+            "id": "co-op", "name": "Full-stack Co‑op",
+            "location": {"country": "sg", "city": "Singapore"},
+        }], "totalFound": 1}
+        detail = {"jobAd": {"sections": {
+            "qualifications": {"text": "Bachelor students"},
+        }}}
+        requester = MagicMock(side_effect=[response(listing), response(detail)])
+        candidates, _ = fetch_smartrecruiters(
+            source("smartrecruiters", token="test"), requester,
+        )
+        self.assertEqual(candidates[0].description, "Bachelor students")
+
     def test_greenhouse_normalizes_job(self):
         requester = MagicMock(return_value=response({"jobs": [{
             "id": 1,
@@ -314,3 +374,4 @@ class BespokeAdapterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

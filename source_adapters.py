@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
+from role_patterns import STUDENT_ROLE_PATTERN, normalize_role_title
 
 
 @dataclass
@@ -170,7 +171,7 @@ def fetch_source(source: dict, requester) -> SourceFetchResult:
 def fetch_greenhouse(source: dict, requester):
     token = source["config"]["token"]
     url = f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs"
-    document = requester("GET", url).json()
+    document = requester("GET", url, params={"content": "true"}).json()
     if not isinstance(document.get("jobs"), list):
         raise ValueError("Greenhouse response has no jobs list")
     jobs = document["jobs"]
@@ -309,20 +310,23 @@ def fetch_workday(source: dict, requester, warnings=None):
         location = job.get("locationsText")
         description = ""
         detail = {}
-        if _looks_like_student_technical(title) and _looks_like_singapore(location):
+        # A summary may say only "Multiple Locations"; the detail lists offices.
+        if _looks_like_student_technical(title):
             try:
                 detail_document = requester("GET", f"{base}{external_path}").json()
                 detail = detail_document.get("jobPostingInfo") or {}
                 description = detail.get("jobDescription") or ""
             except Exception as error:
                 warnings.append(f"detail {external_path}: {error}")
-        url = detail.get("externalUrl") or urljoin(host, external_path)
+        url = detail.get("externalUrl") or f"{host}/{site}{external_path}"
+        locations = [detail.get("location") or location]
+        locations.extend(detail.get("additionalLocations") or [])
         candidates.append(_candidate(
             source,
             external_path,
             title,
             url,
-            location=detail.get("location") or location,
+            location=locations if len(locations) > 1 else locations[0],
             country=detail.get("country"),
             date_posted=detail.get("startDate") or job.get("postedOn"),
             description=description,
@@ -341,12 +345,18 @@ def fetch_ashby(source: dict, requester):
     for job in jobs:
         if job.get("isListed") is False:
             continue
+        locations = [job.get("location")]
+        locations.extend(
+            item.get("location")
+            for item in job.get("secondaryLocations") or []
+            if isinstance(item, dict) and item.get("location")
+        )
         candidates.append(_candidate(
             source,
             job.get("id"),
             job.get("title"),
             job.get("jobUrl") or job.get("applyUrl"),
-            location=job.get("location"),
+            location=locations if len(locations) > 1 else locations[0],
             date_posted=job.get("publishedAt"),
             description=job.get("descriptionHtml") or job.get("descriptionPlain") or "",
         ))
@@ -467,12 +477,18 @@ def _looks_like_singapore(value) -> bool:
 
 
 def _looks_like_student_technical(title: str) -> bool:
+    title = normalize_role_title(title)
     return bool(
-        re.search(r"\b(intern|internship|co-?op|trainee|analyst|wintern)\b", title, re.I)
+        re.search(STUDENT_ROLE_PATTERN, title, re.I)
         and re.search(
-            r"\b(software|technology|engineer|developer|data|quant|quantitative|trading|"
-            r"research|machine learning|ml|ai|security|infrastructure|risk)\b",
+            r"\b(software|technology|engineer|engineering|developer|data|quant|quantitative|trading|"
+            r"research|machine learning|ml|ai|security|infrastructure|risk|it|qa|sre|"
+            r"backend|frontend|fullstack|cloud|systems|platform|devops|cybersecurity|"
+            r"computer vision|nlp|genai|llm|blockchain|reinforcement learning|robotics|"
+            r"firmware|embedded|database|automation|business intelligence|"
+            r"enterprise architecture|mobile|web|npu|gpu|model efficiency)\b",
             title,
             re.I,
         )
     )
+
