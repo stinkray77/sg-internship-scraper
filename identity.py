@@ -32,6 +32,7 @@ def identity_metadata(job):
         'location': normalized(json.dumps(job.get('location'), sort_keys=True)),
         'intake': ' '.join(re.findall(r'\b20\d{2}\b', str(job.get('title') or ''))),
         'source': source,
+        'url': canonical_url(job.get('job_url_direct') or job.get('job_url')),
         'requisition': str(requisition or ''),
     }
 
@@ -51,6 +52,8 @@ def aliases_for(job):
 def compatible(first, second):
     if any(first.get(k) and second.get(k) and first[k] != second[k]
            for k in ('company', 'title', 'location', 'intake')):
+        return False
+    if first.get('url') and second.get('url') and first['url'] != second['url']:
         return False
     # Two known requisitions with no common URL must not merge by title.
     return not (first.get('requisition') and second.get('requisition'))

@@ -335,6 +335,8 @@ def init_db():
         WHERE observations.lifecycle_version = 0
         ON CONFLICT DO NOTHING;
     """)
+    migrate_identity_schema(cur)
+    backfill_identities(cur)
     conn.commit()
     cur.close()
     conn.close()
