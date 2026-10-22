@@ -74,5 +74,27 @@ class PostgresTests(unittest.TestCase):
                 self.assertEqual(status, 'sent')
                 self.assertTrue(identity)
 
+    def test_health_summary_and_run_persistence(self):
+        from source_health import record_run, write_summary
+        with self.connection() as conn:
+            stats = main.PipelineStats('test', fetched=2, matched=1)
+            record_run(conn, stats)
+            report = write_summary([stats], conn)
+            self.assertIn('Employer coverage', report)
+            with conn.cursor() as cur:
+                cur.execute('SELECT count(*) FROM source_runs')
+                self.assertEqual(cur.fetchone()[0], 1)
+
+    def test_eligibility_transition_alerts_once_and_does_not_close_presence(self):
+        job = self.job()
+        stats = main.PipelineStats('test')
+        with self.connection() as conn:
+            main.observe_job(conn, 'observed', 'greenhouse_firm', '1', {**job, 'alert_eligible': False}, stats)
+            main.observe_job(conn, 'observed', 'greenhouse_firm', '1', {**job, 'alert_eligible': True}, stats)
+            main.observe_job(conn, 'observed', 'greenhouse_firm', '1', {**job, 'alert_eligible': True}, stats)
+            with conn.cursor() as cur:
+                cur.execute('SELECT count(*) FROM seen_jobs')
+                self.assertEqual(cur.fetchone()[0], 1)
+
 if __name__ == '__main__':
     unittest.main()

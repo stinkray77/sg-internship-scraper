@@ -19,3 +19,7 @@ class IdentityTests(unittest.TestCase):
     def test_location_fallback_is_conservative(self):
         self.assertFalse(compatible({'company': 'a', 'location': 'london'},
                                     {'company': 'a', 'location': 'singapore'}))
+
+    def test_distinct_application_links_are_not_collapsed_by_title(self):
+        first = dict(company='firm', title='intern', url='https://firm.example/jobs/1')
+        self.assertFalse(compatible(first, {**first, 'url':'https://firm.example/jobs/2'}))

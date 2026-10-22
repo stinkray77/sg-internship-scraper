@@ -439,7 +439,7 @@ class DeliveryTests(unittest.TestCase):
         canary.assert_called_once()
         broad.assert_not_called()
 
-    def test_official_sources_run_before_aggregators(self):
+    def test_discovery_group_only_runs_aggregators(self):
         calls = []
         with (
             patch(
@@ -459,10 +459,10 @@ class DeliveryTests(unittest.TestCase):
                 side_effect=lambda: calls.append("jobspy") or main.PipelineStats("jobspy"),
             ),
         ):
-            exit_code = main.main(["--dry-run"])
+            exit_code = main.main(["--dry-run", "--group", "discovery"])
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(calls, ["registry", "quant", "internsg", "jobspy"])
+        self.assertEqual(calls, ["quant", "internsg", "jobspy"])
 
     def test_dry_run_skips_database_and_delivery(self):
         empty_stats = lambda name: main.PipelineStats(name)
@@ -480,7 +480,7 @@ class DeliveryTests(unittest.TestCase):
                 )
             init_db = stack.enter_context(patch("main.init_db"))
             deliver = stack.enter_context(patch("main.deliver_pending_jobs"))
-            exit_code = main.main(["--dry-run"])
+            exit_code = main.main(["--dry-run", "--group", "discovery"])
 
         self.assertEqual(exit_code, 0)
         init_db.assert_not_called()

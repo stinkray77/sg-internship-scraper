@@ -327,9 +327,9 @@ class LifecycleTests(unittest.TestCase):
 
         self.assertEqual(stats[0].matched, 1)
         self.assertEqual(stats[0].filtered_location, 0)
-        self.assertEqual(stats[0].queued, 0)
+        self.assertEqual(stats[0].queued, 1)
 
-    def test_new_index_sources_are_silently_baselined(self):
+    def test_new_index_sources_queue_current_unseen_matches(self):
         singapore_markdown = """
 | Company | Role | Track | Application | Date Added |
 |---|---|:---:|:---:|:---:|
@@ -355,10 +355,10 @@ class LifecycleTests(unittest.TestCase):
 
         self.assertEqual(singapore_stats.fetched, 1)
         self.assertEqual(singapore_stats.matched, 1)
-        self.assertEqual(singapore_stats.queued, 0)
+        self.assertEqual(singapore_stats.queued, 1)
         self.assertEqual(quant_stats.fetched, 1)
         self.assertEqual(quant_stats.matched, 1)
-        self.assertEqual(quant_stats.queued, 0)
+        self.assertEqual(quant_stats.queued, 1)
 
 
 class MigrationTests(unittest.TestCase):
@@ -383,3 +383,4 @@ class MigrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
