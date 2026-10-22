@@ -142,6 +142,10 @@ a rare duplicate on retry.
 
 ## Health, freshness and tests
 
+The health tracker uses `scraper_source_runs`; any older `source_runs` table is
+left untouched. Manual workflow mode `schema` reads table definitions without
+reading job records or changing the database.
+
 GitHub Actions summaries show source counts, durations, coverage gaps, rejection
 counts, operational warnings and immediate queue-to-send latency. Source history
 is retained for 90 days. Warnings cover three consecutive failures, three empty
