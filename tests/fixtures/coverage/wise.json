@@ -1,0 +1,281 @@
+{
+  "adapter": "smartrecruiters",
+  "source_url": "https://api.smartrecruiters.com/v1/companies/Wise/postings?limit=100",
+  "verified_at": "2026-10-22T06:50:58.991512+00:00",
+  "response": {
+    "content": [
+      {
+        "id": "744000157044410",
+        "name": "Senior Technical Recruiter",
+        "uuid": "be7806a1-54f4-431a-a4e9-c2751b93851b",
+        "jobAdId": "25d36590-7509-4518-a3c8-96778843d5dc",
+        "defaultJobAd": true,
+        "refNumber": "R10979",
+        "company": {
+          "identifier": "Wise",
+          "name": "Wise"
+        },
+        "releasedDate": "2026-10-22T06:40:06.668Z",
+        "location": {
+          "city": "Tallinn",
+          "country": "ee",
+          "address": "Kopli tn 68a",
+          "postalCode": "10412",
+          "remote": false,
+          "hybrid": false,
+          "fullLocation": "Tallinn, , Estonia"
+        },
+        "industry": {
+          "id": "financial_services",
+          "label": "Financial Services"
+        },
+        "department": {},
+        "function": {
+          "id": "human_resources",
+          "label": "Human Resources"
+        },
+        "typeOfEmployment": {
+          "id": "permanent",
+          "label": "Full-time"
+        },
+        "experienceLevel": {
+          "id": "mid_senior_level",
+          "label": "Mid-Senior Level"
+        },
+        "customField": [
+          {
+            "fieldId": "65d3d0e0d37044292ef9549b",
+            "fieldLabel": "Job Profile",
+            "valueId": "e380f86fa0b201f474c45fce9501970f",
+            "valueLabel": "Recruitment Specialist - JP100571"
+          },
+          {
+            "fieldId": "65d3d0a7d37044292ef9549a",
+            "fieldLabel": "Job Family",
+            "valueId": "031d60c1f3b2014dd54ba985bc005700",
+            "valueLabel": "Recruitment"
+          },
+          {
+            "fieldId": "COUNTRY",
+            "fieldLabel": "Country/Region",
+            "valueId": "ee",
+            "valueLabel": "Estonia"
+          },
+          {
+            "fieldId": "65d3d05c735007771b14e932",
+            "fieldLabel": "Worker Type",
+            "valueId": "EE",
+            "valueLabel": "Wiser"
+          },
+          {
+            "fieldId": "65cea5ac287e8d0651481809",
+            "fieldLabel": "Time Type",
+            "valueId": "d2f4dafccd5101059b6cf09e12278400",
+            "valueLabel": "Full time"
+          },
+          {
+            "fieldId": "65d3d06b2865b46cfa4f0ec3",
+            "fieldLabel": "Worker Sub Type",
+            "valueId": "046034784a4d016f1889ba8863278f0d",
+            "valueLabel": "Permanent"
+          },
+          {
+            "fieldId": "65d3d141c86c2f3257de414c",
+            "fieldLabel": "Cost Center Hierarchy",
+            "valueId": "6d8f1bd75a70013faa078331c7128f1c",
+            "valueLabel": "People"
+          },
+          {
+            "fieldId": "658553f79a81b00900831a80",
+            "fieldLabel": "Brands",
+            "valueId": "default",
+            "valueLabel": "Wise"
+          },
+          {
+            "fieldId": "65d3d0374c34974b271801f9",
+            "fieldLabel": "Management Level",
+            "valueId": "e82698b941950185dfe774d4f100d610",
+            "valueLabel": "5"
+          },
+          {
+            "fieldId": "65d3d0926435ba43bdb089ac",
+            "fieldLabel": "Job Family Group",
+            "valueId": "cf8ed98297e201ac68d6380dba008814",
+            "valueLabel": "People"
+          },
+          {
+            "fieldId": "65d3d151a5d3185b4341a7ab",
+            "fieldLabel": "Cost Center",
+            "valueId": "6d8f1bd75a70013e80150332c712021d",
+            "valueLabel": "People Recruitment"
+          },
+          {
+            "fieldId": "65cec407735007771b14e92d",
+            "fieldLabel": "Company",
+            "valueId": "046034784a4d01afa89d0f4764272117",
+            "valueLabel": "Wise Payments Limited Eesti filiaal"
+          },
+          {
+            "fieldId": "65d90823f2e6436af25814c2",
+            "fieldLabel": "Job Ad Salary Range",
+            "valueLabel": "3750 - 4750 EUR Monthly"
+          },
+          {
+            "fieldId": "65d9080b4aa2f46927dfc1f3",
+            "fieldLabel": "WD Target Hire Date",
+            "valueLabel": "2026-10-23"
+          }
+        ],
+        "visibility": "PUBLIC",
+        "ref": "https://api.smartrecruiters.com/v1/companies/Wise/postings/744000157044410",
+        "language": {
+          "code": "en",
+          "label": "English",
+          "labelNative": "English (US)"
+        }
+      },
+      {
+        "id": "744000157038370",
+        "name": "Workplace Operations Coordinator",
+        "uuid": "42549e20-502e-4135-b6dd-a2b8a27cb584",
+        "jobAdId": "c0a38f56-941a-4007-823a-2e78b55bfe17",
+        "defaultJobAd": true,
+        "refNumber": "R11188",
+        "company": {
+          "identifier": "Wise",
+          "name": "Wise"
+        },
+        "releasedDate": "2026-10-22T05:34:48.854Z",
+        "location": {
+          "city": "Singapore",
+          "country": "sg",
+          "address": "#07-01, 2 Tanjong Katong Road, Paya Lebar Quarter, Tower 3",
+          "postalCode": "437161",
+          "remote": false,
+          "hybrid": false,
+          "fullLocation": "Singapore, , Singapore"
+        },
+        "industry": {
+          "id": "financial_services",
+          "label": "Financial Services"
+        },
+        "department": {},
+        "function": {
+          "id": "human_resources",
+          "label": "Human Resources"
+        },
+        "typeOfEmployment": {
+          "id": "permanent",
+          "label": "Full-time"
+        },
+        "experienceLevel": {
+          "id": "mid_senior_level",
+          "label": "Mid-Senior Level"
+        },
+        "customField": [
+          {
+            "fieldId": "65d3d0e0d37044292ef9549b",
+            "fieldLabel": "Job Profile",
+            "valueId": "031d60c1f3b20124891c88c795013d0a",
+            "valueLabel": "Workplace Senior Associate - JP100434"
+          },
+          {
+            "fieldId": "65cea5ac287e8d0651481809",
+            "fieldLabel": "Time Type",
+            "valueId": "d2f4dafccd5101059b6cf09e12278400",
+            "valueLabel": "Full time"
+          },
+          {
+            "fieldId": "65d3d06b2865b46cfa4f0ec3",
+            "fieldLabel": "Worker Sub Type",
+            "valueId": "046034784a4d016f1889ba8863278f0d",
+            "valueLabel": "Permanent"
+          },
+          {
+            "fieldId": "65d3d141c86c2f3257de414c",
+            "fieldLabel": "Cost Center Hierarchy",
+            "valueId": "6d8f1bd75a70013faa078331c7128f1c",
+            "valueLabel": "People"
+          },
+          {
+            "fieldId": "658553f79a81b00900831a80",
+            "fieldLabel": "Brands",
+            "valueId": "default",
+            "valueLabel": "Wise"
+          },
+          {
+            "fieldId": "65d3d0374c34974b271801f9",
+            "fieldLabel": "Management Level",
+            "valueId": "e82698b94195016f133d61d1f100d410",
+            "valueLabel": "3"
+          },
+          {
+            "fieldId": "65d3d151a5d3185b4341a7ab",
+            "fieldLabel": "Cost Center",
+            "valueId": "6d8f1bd75a7001a703350832c712071d",
+            "valueLabel": "People Office"
+          },
+          {
+            "fieldId": "697ecac4054e02cef8c7a2ce",
+            "fieldLabel": "ORGANIZATION_TYPE-3-84 L1",
+            "valueId": "1a996433adb41001d77f89dee2560000",
+            "valueLabel": "Wise Start"
+          },
+          {
+            "fieldId": "65d3d0a7d37044292ef9549a",
+            "fieldLabel": "Job Family",
+            "valueId": "740e026f1d1201868ec2f02ccd000755",
+            "valueLabel": "Workplace"
+          },
+          {
+            "fieldId": "COUNTRY",
+            "fieldLabel": "Country/Region",
+            "valueId": "sg",
+            "valueLabel": "Singapore"
+          },
+          {
+            "fieldId": "65d3d05c735007771b14e932",
+            "fieldLabel": "Worker Type",
+            "valueId": "EE",
+            "valueLabel": "Wiser"
+          },
+          {
+            "fieldId": "697ecac2a597b90c91f0575a",
+            "fieldLabel": "Matrix L1",
+            "valueId": "96f473f16f7a1001051277e92e010000",
+            "valueLabel": "APAC Regional Operations"
+          },
+          {
+            "fieldId": "65d3d0926435ba43bdb089ac",
+            "fieldLabel": "Job Family Group",
+            "valueId": "cf8ed98297e201ac68d6380dba008814",
+            "valueLabel": "People"
+          },
+          {
+            "fieldId": "65cec407735007771b14e92d",
+            "fieldLabel": "Company",
+            "valueId": "046034784a4d019f6374154764277517",
+            "valueLabel": "Wise Asia-Pacific Pte Ltd"
+          },
+          {
+            "fieldId": "65d90823f2e6436af25814c2",
+            "fieldLabel": "Job Ad Salary Range",
+            "valueLabel": "4900 - 5600 SGD Monthly + RSUs"
+          },
+          {
+            "fieldId": "65d9080b4aa2f46927dfc1f3",
+            "fieldLabel": "WD Target Hire Date",
+            "valueLabel": "2026-12-01"
+          }
+        ],
+        "visibility": "PUBLIC",
+        "ref": "https://api.smartrecruiters.com/v1/companies/Wise/postings/744000157038370",
+        "language": {
+          "code": "en",
+          "label": "English",
+          "labelNative": "English (US)"
+        }
+      }
+    ]
+  }
+}

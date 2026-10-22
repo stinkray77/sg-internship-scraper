@@ -1,0 +1,236 @@
+{
+  "adapter": "smartrecruiters",
+  "source_url": "https://api.smartrecruiters.com/v1/companies/ServiceNow/postings?limit=100",
+  "verified_at": "2026-10-22T06:50:54.235582+00:00",
+  "response": {
+    "content": [
+      {
+        "id": "744000156912806",
+        "name": "Sr Staff Software Engineer (Distributed Systems | Data Ingestion | Storage | Analytics) - Remote ",
+        "uuid": "0e156249-1e87-4ecd-a16b-f867705f00c5",
+        "jobAdId": "aaf783fb-7efb-4add-9423-5fcf8a1e2deb",
+        "defaultJobAd": true,
+        "refNumber": "JB0076344",
+        "company": {
+          "identifier": "ServiceNow",
+          "name": "ServiceNow"
+        },
+        "releasedDate": "2026-10-22T00:52:46.633Z",
+        "location": {
+          "city": "San Diego",
+          "region": "CALIFORNIA",
+          "country": "us",
+          "address": "4810 Eastgate Mall",
+          "postalCode": "92121",
+          "remote": true,
+          "hybrid": false,
+          "fullLocation": "San Diego, CALIFORNIA, United States"
+        },
+        "industry": {
+          "id": "it_and_services",
+          "label": "Information Technology And Services"
+        },
+        "department": {
+          "id": "2294038",
+          "label": "Engineering, Infrastructure and Operations"
+        },
+        "function": {
+          "id": "engineering",
+          "label": "Engineering"
+        },
+        "typeOfEmployment": {
+          "id": "permanent",
+          "label": "Full-time"
+        },
+        "experienceLevel": {
+          "id": "not_applicable",
+          "label": "Not Applicable"
+        },
+        "customField": [
+          {
+            "fieldId": "60345fa28b4ba8595bef1863",
+            "fieldLabel": "Recruiting Team",
+            "valueId": "professional",
+            "valueLabel": "Professional"
+          },
+          {
+            "fieldId": "60345d5c5165a31b17288279",
+            "fieldLabel": "Region",
+            "valueId": "722a833b93e4437798309f43c0d25990",
+            "valueLabel": "AMS - North America and Canada"
+          },
+          {
+            "fieldId": "6034601b43915a29a4b3389b",
+            "fieldLabel": "Job Location",
+            "valueId": "L_RMTE_CA",
+            "valueLabel": "Remote, CA, USA(L_RMTE_CA)"
+          },
+          {
+            "fieldId": "60345e1a0b24a127cbdfa148",
+            "fieldLabel": "Employee Type",
+            "valueId": "0082f6cbe6154da19322cbab1f6aa5af",
+            "valueLabel": "Regular"
+          },
+          {
+            "fieldId": "5f63a78f1dae5c5c4e54ba2b",
+            "fieldLabel": "Department",
+            "valueId": "2294038",
+            "valueLabel": "Engineering, Infrastructure and Operations"
+          },
+          {
+            "fieldId": "COUNTRY",
+            "fieldLabel": "Country/Region",
+            "valueId": "us",
+            "valueLabel": "United States"
+          },
+          {
+            "fieldId": "5f63a78f1dae5c5c4e54ba2a",
+            "fieldLabel": "Brands",
+            "valueId": "default",
+            "valueLabel": "ServiceNow"
+          },
+          {
+            "fieldId": "603462175165a31b1728827d",
+            "fieldLabel": "Cost Center",
+            "valueId": "CC6098",
+            "valueLabel": "6098 TWF Infrastructure Engineering"
+          },
+          {
+            "fieldId": "618ed92b8f5e5f110e5bfb95",
+            "fieldLabel": "Work Persona",
+            "valueId": "bf7551c6-9b06-4e7c-8217-3baf43edd060",
+            "valueLabel": "Flexible"
+          },
+          {
+            "fieldId": "690cc0e8c682c3dbadaa7d73",
+            "fieldLabel": "Job Posting Type",
+            "valueId": "professional",
+            "valueLabel": "Professional"
+          }
+        ],
+        "visibility": "PUBLIC",
+        "ref": "https://api.smartrecruiters.com/v1/companies/ServiceNow/postings/744000156912806",
+        "creator": {
+          "name": "Bharadwaj Vittala"
+        },
+        "language": {
+          "code": "en",
+          "label": "English",
+          "labelNative": "English (US)"
+        }
+      },
+      {
+        "id": "744000156894349",
+        "name": "Senior Staff Software Engineer - Platform Access Control - Security",
+        "uuid": "91dc0591-a855-42fe-8ca2-bf51a80c74b5",
+        "jobAdId": "7de0e301-ac25-4244-b0ae-de35ad4604ee",
+        "defaultJobAd": true,
+        "refNumber": "JB0075814",
+        "company": {
+          "identifier": "ServiceNow",
+          "name": "ServiceNow"
+        },
+        "releasedDate": "2026-10-21T21:02:04.050Z",
+        "location": {
+          "city": "Santa Clara",
+          "region": "CALIFORNIA",
+          "country": "us",
+          "address": "Building A,B,C 2225 Lawson Lane",
+          "postalCode": "95054",
+          "remote": false,
+          "hybrid": false,
+          "fullLocation": "Santa Clara, CALIFORNIA, United States"
+        },
+        "industry": {
+          "id": "it_and_services",
+          "label": "Information Technology And Services"
+        },
+        "department": {
+          "id": "2294038",
+          "label": "Engineering, Infrastructure and Operations"
+        },
+        "function": {
+          "id": "engineering",
+          "label": "Engineering"
+        },
+        "typeOfEmployment": {
+          "id": "permanent",
+          "label": "Full-time"
+        },
+        "experienceLevel": {
+          "id": "not_applicable",
+          "label": "Not Applicable"
+        },
+        "customField": [
+          {
+            "fieldId": "60345fa28b4ba8595bef1863",
+            "fieldLabel": "Recruiting Team",
+            "valueId": "professional",
+            "valueLabel": "Professional"
+          },
+          {
+            "fieldId": "60345d5c5165a31b17288279",
+            "fieldLabel": "Region",
+            "valueId": "722a833b93e4437798309f43c0d25990",
+            "valueLabel": "AMS - North America and Canada"
+          },
+          {
+            "fieldId": "6034601b43915a29a4b3389b",
+            "fieldLabel": "Job Location",
+            "valueId": "L_SJC005",
+            "valueLabel": "2225 Lawson Lane, Santa Clara, California, 95054, United States of America(L_SJC005)"
+          },
+          {
+            "fieldId": "60345e1a0b24a127cbdfa148",
+            "fieldLabel": "Employee Type",
+            "valueId": "0082f6cbe6154da19322cbab1f6aa5af",
+            "valueLabel": "Regular"
+          },
+          {
+            "fieldId": "5f63a78f1dae5c5c4e54ba2b",
+            "fieldLabel": "Department",
+            "valueId": "2294038",
+            "valueLabel": "Engineering, Infrastructure and Operations"
+          },
+          {
+            "fieldId": "COUNTRY",
+            "fieldLabel": "Country/Region",
+            "valueId": "us",
+            "valueLabel": "United States"
+          },
+          {
+            "fieldId": "5f63a78f1dae5c5c4e54ba2a",
+            "fieldLabel": "Brands",
+            "valueId": "default",
+            "valueLabel": "ServiceNow"
+          },
+          {
+            "fieldId": "603462175165a31b1728827d",
+            "fieldLabel": "Cost Center",
+            "valueId": "CC6305",
+            "valueLabel": "6305 Platform Security Core Engineering"
+          },
+          {
+            "fieldId": "618ed92b8f5e5f110e5bfb95",
+            "fieldLabel": "Work Persona",
+            "valueId": "bf7551c6-9b06-4e7c-8217-3baf43edd060",
+            "valueLabel": "Flexible"
+          },
+          {
+            "fieldId": "690cc0e8c682c3dbadaa7d73",
+            "fieldLabel": "Job Posting Type",
+            "valueId": "professional",
+            "valueLabel": "Professional"
+          }
+        ],
+        "visibility": "PUBLIC",
+        "ref": "https://api.smartrecruiters.com/v1/companies/ServiceNow/postings/744000156894349",
+        "language": {
+          "code": "en",
+          "label": "English",
+          "labelNative": "English (US)"
+        }
+      }
+    ]
+  }
+}

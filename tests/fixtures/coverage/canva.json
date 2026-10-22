@@ -1,0 +1,252 @@
+{
+  "adapter": "smartrecruiters",
+  "source_url": "https://api.smartrecruiters.com/v1/companies/Canva/postings?limit=100",
+  "verified_at": "2026-10-22T06:50:58.921334+00:00",
+  "response": {
+    "content": [
+      {
+        "id": "6000000001511859",
+        "name": "EMEA Talent Acquisition Lead (14 month FTC)",
+        "uuid": "9e7f7d39-98e8-43be-9cdf-949f47cc1c56",
+        "jobAdId": "2914c875-d940-40c7-b65d-f84a8c687713",
+        "defaultJobAd": true,
+        "refNumber": "R103089",
+        "company": {
+          "identifier": "Canva",
+          "name": "Canva"
+        },
+        "releasedDate": "2026-10-22T02:18:47.638Z",
+        "location": {
+          "city": "London",
+          "region": "POST-LON",
+          "country": "gb",
+          "remote": false,
+          "hybrid": true,
+          "fullLocation": "London, POST-LON, United Kingdom"
+        },
+        "industry": {
+          "id": "computer_software",
+          "label": "Computer Software"
+        },
+        "department": {},
+        "function": {
+          "id": "human_resources",
+          "label": "Human Resources"
+        },
+        "typeOfEmployment": {
+          "id": "permanent",
+          "label": "Full-time"
+        },
+        "experienceLevel": {
+          "id": "not_applicable",
+          "label": "Not Applicable"
+        },
+        "customField": [
+          {
+            "fieldId": "651ba508aac0da4b9cbd91cb",
+            "fieldLabel": "Worker type",
+            "valueId": "d588c41a446c11de98360015c5e6daf6",
+            "valueLabel": "Employee"
+          },
+          {
+            "fieldId": "67db425d21ec03315da962cb",
+            "fieldLabel": "Org",
+            "valueId": "552b243cafd4100169ad44e7ce180000",
+            "valueLabel": "People"
+          },
+          {
+            "fieldId": "651b8b8aaac0da4b9cbd91c9",
+            "fieldLabel": "Recruitment type",
+            "valueId": "ebb715ae-0c50-4bc4-b6b9-d3613ed950d5",
+            "valueLabel": "Fixed Term"
+          },
+          {
+            "fieldId": "651ba0b93066d20abe11145b",
+            "fieldLabel": "Specialty",
+            "valueId": "220b5c7e743d011262dbdba7b8008b13",
+            "valueLabel": "People"
+          },
+          {
+            "fieldId": "651b8bc23066d20abe111459",
+            "fieldLabel": "Supergroup",
+            "valueId": "220b5c7e743d0116d05e9fcd9700fb05",
+            "valueLabel": "People"
+          },
+          {
+            "fieldId": "651ba1c7aac0da4b9cbd91ca",
+            "fieldLabel": "Role level",
+            "valueId": "C1",
+            "valueLabel": "C1"
+          },
+          {
+            "fieldId": "651b99e25ddc3c31d9224321",
+            "fieldLabel": "Group",
+            "valueId": "220b5c7e743d01e144c8becd97008b06",
+            "valueLabel": "Talent Acquisition"
+          },
+          {
+            "fieldId": "651ba171eec5b66729429433",
+            "fieldLabel": "Subspecialty",
+            "valueId": "220b5c7e743d01c76d7918f4b7002313",
+            "valueLabel": "Talent Acquisition"
+          },
+          {
+            "fieldId": "COUNTRY",
+            "fieldLabel": "Country/Region",
+            "valueId": "gb",
+            "valueLabel": "United Kingdom"
+          },
+          {
+            "fieldId": "6514d94a9c140e09b2e649f5",
+            "fieldLabel": "Brands",
+            "valueId": "default",
+            "valueLabel": "Canva"
+          },
+          {
+            "fieldId": "651b8a7b58759b40ab8abd45",
+            "fieldLabel": "Employment type",
+            "valueId": "01ca83be4eaa01c10689432ca5005501",
+            "valueLabel": "Fixed Term (Fixed Term)"
+          },
+          {
+            "fieldId": "651b8e51da1ddb62f488492c",
+            "fieldLabel": "Subgroup",
+            "valueId": "552b243cafd4100169aeb5a75dde0000",
+            "valueLabel": "Leadership, US & EMEA TA"
+          },
+          {
+            "fieldId": "651ba22058759b40ab8abd46",
+            "fieldLabel": "Time type",
+            "valueId": "2ca83e80de45013371c1658ff3029500",
+            "valueLabel": "Full time"
+          }
+        ],
+        "visibility": "PUBLIC",
+        "ref": "https://api.smartrecruiters.com/v1/companies/Canva/postings/6000000001511859",
+        "creator": {
+          "name": "Tyan Bekooy"
+        },
+        "language": {
+          "code": "en",
+          "label": "English",
+          "labelNative": "English (US)"
+        }
+      },
+      {
+        "id": "6000000001511525",
+        "name": "Content Strategy Lead",
+        "uuid": "d1c815e7-6277-403c-bbce-38576b02c25e",
+        "jobAdId": "7c6d9b38-3b28-45d2-b4c0-d71efa616325",
+        "defaultJobAd": true,
+        "refNumber": "REF4765N",
+        "company": {
+          "identifier": "Canva",
+          "name": "Canva"
+        },
+        "releasedDate": "2026-10-22T01:03:44.862Z",
+        "location": {
+          "city": "Sydney",
+          "region": "NSW",
+          "country": "au",
+          "remote": false,
+          "hybrid": true,
+          "latitude": "-33.8622503",
+          "longitude": "151.207684",
+          "fullLocation": "Sydney, NSW, Australia"
+        },
+        "industry": {
+          "id": "computer_software",
+          "label": "Computer Software"
+        },
+        "department": {},
+        "function": {
+          "id": "general_business",
+          "label": "General Business"
+        },
+        "typeOfEmployment": {
+          "id": "permanent",
+          "label": "Full-time"
+        },
+        "experienceLevel": {
+          "id": "director",
+          "label": "Director"
+        },
+        "customField": [
+          {
+            "fieldId": "651ba508aac0da4b9cbd91cb",
+            "fieldLabel": "Worker type",
+            "valueId": "d588c41a446c11de98360015c5e6daf6",
+            "valueLabel": "Employee"
+          },
+          {
+            "fieldId": "651b8b8aaac0da4b9cbd91c9",
+            "fieldLabel": "Recruitment type",
+            "valueId": "2c2d396a-3d34-4286-8196-61a215221fd5",
+            "valueLabel": "Permanent"
+          },
+          {
+            "fieldId": "651ba0b93066d20abe11145b",
+            "fieldLabel": "Specialty",
+            "valueId": "c1e845f6580510011c8d43e6a5840000",
+            "valueLabel": "Content"
+          },
+          {
+            "fieldId": "651b8bc23066d20abe111459",
+            "fieldLabel": "Supergroup",
+            "valueId": "220b5c7e743d011084a39ccd9700e905",
+            "valueLabel": "Content & Discovery"
+          },
+          {
+            "fieldId": "651ba1c7aac0da4b9cbd91ca",
+            "fieldLabel": "Role level",
+            "valueId": "B3",
+            "valueLabel": "B3"
+          },
+          {
+            "fieldId": "651b99e25ddc3c31d9224321",
+            "fieldLabel": "Group",
+            "valueId": "b276719ddbd11000e74546944e8c0000",
+            "valueLabel": "Strategy & Insights"
+          },
+          {
+            "fieldId": "651ba171eec5b66729429433",
+            "fieldLabel": "Subspecialty",
+            "valueId": "220b5c7e743d01e2e4090cf4b700f912",
+            "valueLabel": "Content Strategy"
+          },
+          {
+            "fieldId": "COUNTRY",
+            "fieldLabel": "Country/Region",
+            "valueId": "au",
+            "valueLabel": "Australia"
+          },
+          {
+            "fieldId": "6514d94a9c140e09b2e649f5",
+            "fieldLabel": "Brands",
+            "valueId": "default",
+            "valueLabel": "Canva"
+          },
+          {
+            "fieldId": "651b8a7b58759b40ab8abd45",
+            "fieldLabel": "Employment type",
+            "valueId": "01ca83be4eaa01d34208432ca5005301",
+            "valueLabel": "Permanent"
+          },
+          {
+            "fieldId": "651ba22058759b40ab8abd46",
+            "fieldLabel": "Time type",
+            "valueId": "2ca83e80de45013371c1658ff3029500",
+            "valueLabel": "Full time"
+          }
+        ],
+        "visibility": "PUBLIC",
+        "ref": "https://api.smartrecruiters.com/v1/companies/Canva/postings/6000000001511525",
+        "language": {
+          "code": "en",
+          "label": "English",
+          "labelNative": "English (US)"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,283 @@
+{
+  "adapter": "greenhouse",
+  "source_url": "https://boards-api.greenhouse.io/v1/boards/exoduspoint/jobs?content=true",
+  "verified_at": "2026-10-22T06:50:39.687738+00:00",
+  "response": {
+    "jobs": [
+      {
+        "absolute_url": "https://job-boards.greenhouse.io/exoduspoint/jobs/7460797002",
+        "data_compliance": [
+          {
+            "type": "gdpr",
+            "requires_consent": false,
+            "requires_processing_consent": false,
+            "requires_retention_consent": false,
+            "retention_period": null,
+            "demographic_data_consent_applies": false
+          }
+        ],
+        "internal_job_id": 5923213002,
+        "location": {
+          "name": "Anywhere"
+        },
+        "metadata": [
+          {
+            "id": 8092988002,
+            "name": "Worker Type",
+            "value": "Employee",
+            "value_type": "single_select"
+          },
+          {
+            "id": 10801945002,
+            "name": "Department Head",
+            "value": {
+              "name": "Jeff Gelband",
+              "email": "jeff.gelband@exoduspoint.com",
+              "user_id": 4528199002,
+              "employee_id": null
+            },
+            "value_type": "user"
+          },
+          {
+            "id": 9767661002,
+            "name": "Cost Center",
+            "value": "Equity PM Teams",
+            "value_type": "single_select"
+          },
+          {
+            "id": 10902910002,
+            "name": "Hiring Group",
+            "value": "Equity - Non-Quant",
+            "value_type": "single_select"
+          },
+          {
+            "id": 11223401002,
+            "name": "Hiring Type",
+            "value": "New Hire",
+            "value_type": "single_select"
+          },
+          {
+            "id": 11223402002,
+            "name": "Position Title",
+            "value": "Investment",
+            "value_type": "short_text"
+          },
+          {
+            "id": 11223666002,
+            "name": "Company",
+            "value": "ExodusPoint Capital Management, LP",
+            "value_type": "single_select"
+          },
+          {
+            "id": 11223896002,
+            "name": "Estimated Start Date",
+            "value": "",
+            "value_type": "date"
+          },
+          {
+            "id": 11263548002,
+            "name": "Target Salary Range",
+            "value": null,
+            "value_type": "short_text"
+          },
+          {
+            "id": 11223898002,
+            "name": "Estimated Bonus",
+            "value": {
+              "unit": null,
+              "amount": "0.0"
+            },
+            "value_type": "currency"
+          }
+        ],
+        "id": 7460797002,
+        "updated_at": "2025-06-24T12:58:23-04:00",
+        "requisition_id": "741",
+        "title": "Investment - ExodusPoint Jobs Page",
+        "company_name": "ExodusPoint",
+        "first_published": "2024-06-18T10:27:31-04:00",
+        "language": "en",
+        "application_deadline": null,
+        "content": "&lt;p&gt;Thank you for your interest in ExodusPoint!&lt;/p&gt;\n&lt;p&gt;We will review your profile and share with any relevant teams that are hiring. If there is an opening that is a fit, we will be in touch with you directly to discuss further.&lt;/p&gt;\n&lt;p&gt;Best,&lt;/p&gt;\n&lt;p&gt;ExodusPoint Business Development Team&lt;/p&gt;",
+        "departments": [
+          {
+            "id": 4053957002,
+            "name": "Equity PM Teams",
+            "child_ids": [],
+            "parent_id": 4055915002
+          }
+        ],
+        "offices": [
+          {
+            "id": 4033479002,
+            "name": "Hong Kong",
+            "location": null,
+            "child_ids": [],
+            "parent_id": 4034964002
+          },
+          {
+            "id": 4033475002,
+            "name": "London, UK (LLP)",
+            "location": "London",
+            "child_ids": [],
+            "parent_id": 4034965002
+          },
+          {
+            "id": 4033477002,
+            "name": "New York, NY",
+            "location": null,
+            "child_ids": [],
+            "parent_id": 4034966002
+          },
+          {
+            "id": 4033478002,
+            "name": "Singapore",
+            "location": null,
+            "child_ids": [],
+            "parent_id": 4034964002
+          }
+        ],
+        "ai_disclaimer": null,
+        "include_ai_disclaimer": null,
+        "ai_opt_out_request_url": null
+      },
+      {
+        "absolute_url": "https://job-boards.greenhouse.io/exoduspoint/jobs/6160836002",
+        "data_compliance": [
+          {
+            "type": "gdpr",
+            "requires_consent": false,
+            "requires_processing_consent": false,
+            "requires_retention_consent": false,
+            "retention_period": null,
+            "demographic_data_consent_applies": false
+          }
+        ],
+        "internal_job_id": 5279442002,
+        "location": {
+          "name": "Anywhere"
+        },
+        "metadata": [
+          {
+            "id": 8092988002,
+            "name": "Worker Type",
+            "value": "Employee",
+            "value_type": "single_select"
+          },
+          {
+            "id": 10801945002,
+            "name": "Department Head",
+            "value": {
+              "name": "Jeff Gelband",
+              "email": "jeff.gelband@exoduspoint.com",
+              "user_id": 4528199002,
+              "employee_id": null
+            },
+            "value_type": "user"
+          },
+          {
+            "id": 9767661002,
+            "name": "Cost Center",
+            "value": "Firm - Other",
+            "value_type": "single_select"
+          },
+          {
+            "id": 10902910002,
+            "name": "Hiring Group",
+            "value": "Non-Investment",
+            "value_type": "single_select"
+          },
+          {
+            "id": 11223401002,
+            "name": "Hiring Type",
+            "value": "New Hire",
+            "value_type": "single_select"
+          },
+          {
+            "id": 11223402002,
+            "name": "Position Title",
+            "value": "Confidential - Non-Investment - Referral - Opportunistic",
+            "value_type": "short_text"
+          },
+          {
+            "id": 11223666002,
+            "name": "Company",
+            "value": "ExodusPoint Capital Management, LP",
+            "value_type": "single_select"
+          },
+          {
+            "id": 11223896002,
+            "name": "Estimated Start Date",
+            "value": "2022-07-01",
+            "value_type": "date"
+          },
+          {
+            "id": 11263548002,
+            "name": "Target Salary Range",
+            "value": "TBD",
+            "value_type": "short_text"
+          },
+          {
+            "id": 11223898002,
+            "name": "Estimated Bonus",
+            "value": {
+              "unit": "USD",
+              "amount": "0.0"
+            },
+            "value_type": "currency"
+          }
+        ],
+        "id": 6160836002,
+        "updated_at": "2025-09-09T09:13:03-04:00",
+        "requisition_id": "448",
+        "title": "Non-Investment - Referral ",
+        "company_name": "ExodusPoint",
+        "first_published": "2022-05-20T12:47:36-04:00",
+        "language": "en",
+        "application_deadline": null,
+        "content": "&lt;p&gt;Non-Investment - Referral&lt;/p&gt;",
+        "departments": [
+          {
+            "id": 4055916002,
+            "name": "Non-Investment",
+            "child_ids": [
+              4099496002,
+              4053950002,
+              4091755002,
+              4121447002,
+              4053941002,
+              4053942002,
+              4053948002,
+              4053947002,
+              4053955002,
+              4053951002,
+              4053952002,
+              4053940002,
+              4053956002,
+              4053959002,
+              4053960002,
+              4112070002,
+              4053953002
+            ],
+            "parent_id": null
+          }
+        ],
+        "offices": [
+          {
+            "id": 4033566002,
+            "name": "Anywhere",
+            "location": null,
+            "child_ids": [
+              4048547002,
+              4048548002
+            ],
+            "parent_id": null
+          }
+        ],
+        "ai_disclaimer": null,
+        "include_ai_disclaimer": null,
+        "ai_opt_out_request_url": null
+      }
+    ]
+  }
+}
