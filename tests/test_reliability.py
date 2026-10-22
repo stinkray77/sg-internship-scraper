@@ -141,7 +141,7 @@ class DeliveryTests(unittest.TestCase):
         cursor.fetchone.side_effect = [None, ("source_1",)]
         stats = main.PipelineStats("test")
 
-        with patch("main.DRY_RUN", False):
+        with patch("main.DRY_RUN", False), patch("main.resolve_identity", return_value="canonical-test"):
             queued = main.enqueue_job(
                 conn,
                 "source_1",
@@ -158,7 +158,7 @@ class DeliveryTests(unittest.TestCase):
         self.assertTrue(queued)
         self.assertEqual(stats.queued, 1)
         dedupe_sql = cursor.execute.call_args_list[0].args[0]
-        self.assertIn("payload->>'job_url'", dedupe_sql)
+        self.assertIn("canonical_id", dedupe_sql)
         insert_sql = cursor.execute.call_args_list[1].args[0]
         self.assertIn("ON CONFLICT (job_id) DO NOTHING", insert_sql)
         conn.commit.assert_called_once()
@@ -185,7 +185,7 @@ class DeliveryTests(unittest.TestCase):
         singapore = main.DELIVERY_TIMEZONE
         now = datetime.datetime(2026, 7, 20, 1, 30, tzinfo=singapore)
 
-        with patch("main.DRY_RUN", False):
+        with patch("main.DRY_RUN", False), patch("main.resolve_identity", return_value="canonical-test"):
             main.enqueue_job(
                 conn,
                 "source_1",
@@ -204,7 +204,7 @@ class DeliveryTests(unittest.TestCase):
         cursor.fetchone.side_effect = [None, ("source_1",)]
         stats = main.PipelineStats("test")
 
-        with patch("main.DRY_RUN", False):
+        with patch("main.DRY_RUN", False), patch("main.resolve_identity", return_value="canonical-test"):
             main.enqueue_job(
                 conn,
                 "source_1",
@@ -488,7 +488,7 @@ class DeliveryTests(unittest.TestCase):
 
 
 class PaginationTests(unittest.TestCase):
-    def test_jobspy_merges_bunge_duplicates_and_prefers_singapore_direct_url(self):
+    def test_jobspy_preserves_unproven_same_title_copies(self):
         linkedin = pd.DataFrame([{
             "id": "li-1",
             "site": "linkedin",
@@ -510,10 +510,10 @@ class PaginationTests(unittest.TestCase):
 
         jobs = main.merge_jobspy_results([linkedin, indeed])
 
-        self.assertEqual(len(jobs), 1)
-        self.assertEqual(jobs[0]["location"], "SG")
-        self.assertEqual(jobs[0]["job_url"], "https://jobs.bunge.com/job/47243")
-        self.assertEqual(jobs[0]["discovery_sites"], ["indeed", "linkedin"])
+        self.assertEqual(len(jobs), 2)
+        direct = next(j for j in jobs if j["site"] == "indeed")
+        self.assertEqual(direct["location"], "SG")
+        self.assertEqual(direct["job_url"], "https://jobs.bunge.com/job/47243")
 
     def test_jobspy_uses_overlap_and_result_limit(self):
         jobs = pd.DataFrame([{
@@ -607,3 +607,4 @@ class PaginationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
