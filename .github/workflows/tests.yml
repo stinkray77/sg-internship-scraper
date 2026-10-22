@@ -1,0 +1,38 @@
+name: Scraper Tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: scraper
+          POSTGRES_PASSWORD: scraper_test
+          POSTGRES_DB: scraper_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Unit and fixture tests
+        run: python -m unittest discover -s tests -v
+      - name: PostgreSQL migration and concurrency tests
+        env:
+          TEST_DATABASE_URL: postgresql://scraper:scraper_test@localhost:5432/scraper_test
+        run: python -m unittest discover -s tests/integration -v

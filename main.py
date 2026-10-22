@@ -26,6 +26,7 @@ from bs4 import BeautifulSoup
 from source_adapters import fetch_source, load_source_registry
 from eligibility import EligibilityAssessment, assess_eligibility
 from role_patterns import STUDENT_ROLE_PATTERN, normalize_role_title
+from identity import migrate_identity_schema, backfill_identities, resolve_identity, observation_identity
 from categories import CATEGORY_ORDER, classify_job_categories, primary_category
 
 # LOAD FIRST
@@ -567,29 +568,31 @@ def enqueue_job(
         due_at = now or datetime.datetime.now(datetime.timezone.utc)
     cur = conn.cursor()
     try:
+        canonical_id = resolve_identity(cur, job)
         if not bypass_recent_dedupe:
             cur.execute(
                 """
                 SELECT job_id
                 FROM seen_jobs
-                WHERE (dedupe_key = %s OR payload->>'job_url' = %s)
+                WHERE canonical_id = %s
                   AND delivery_status IN ('pending', 'sending', 'failed', 'sent')
-                  AND created_at >= CURRENT_TIMESTAMP - INTERVAL '30 days'
                 LIMIT 1
                 """,
-                (dedupe_key, job.get("job_url")),
+                (canonical_id,),
             )
             if cur.fetchone() is not None:
                 stats.duplicates += 1
+                if commit:
+                    conn.commit()
                 return False
 
         cur.execute(
             """
             INSERT INTO seen_jobs (
-                job_id, company, title, site, payload, dedupe_key,
+                job_id, company, title, site, payload, dedupe_key, canonical_id,
                 delivery_status, attempt_count, next_attempt_at, delivery_mode
             )
-            VALUES (%s, %s, %s, %s, %s, %s, 'pending', 0, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', 0, %s, %s)
             ON CONFLICT (job_id) DO NOTHING
             RETURNING job_id
             """,
@@ -600,6 +603,7 @@ def enqueue_job(
                 job.get("site"),
                 Json(job, dumps=json.dumps),
                 dedupe_key,
+                canonical_id,
                 due_at,
                 delivery_mode,
             ),
@@ -709,6 +713,16 @@ def observe_job(
     now = datetime.datetime.now(datetime.timezone.utc)
     cur = conn.cursor()
     try:
+        if source_id == "jobspy":
+            cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", ("observation:" + observation_id,))
+            cur.execute("""SELECT observation_id FROM job_observations
+                WHERE source_id = 'jobspy' AND
+                (job_url = %s OR (payload->>'id' = %s AND payload->>'site' = %s))
+                ORDER BY first_seen_at LIMIT 1""",
+                (payload.get("job_url"), str(payload.get("id") or ""), payload.get("site")))
+            legacy = cur.fetchone()
+            if legacy:
+                observation_id = legacy[0]
         cur.execute(
             """
             SELECT lifecycle_status, content_fingerprint, lifecycle_version,
@@ -1674,7 +1688,8 @@ def merge_jobspy_results(frames: list[pd.DataFrame]) -> list[dict]:
     for job in exact.values():
         key = (
             canonical_company_name(str(job.get("company") or "")),
-            re.sub(r"[^a-z0-9]", "", str(job.get("title") or "").lower()),
+            canonicalize_job_url(job.get("job_url_direct") or job.get("job_url"))
+            or str(job.get("site")) + ":" + str(job.get("id")),
         )
         existing = merged.get(key)
         if existing is None:
@@ -1797,7 +1812,7 @@ def run_pipeline():
             source_label = " + ".join(site.title() for site in sites) + " job listing"
             job_data["source_id"] = "jobspy"
             job_data["source_label"] = source_label
-            raw_id = make_dedupe_key(job_data)[:24]
+            raw_id = observation_identity(job_data)
             unique_id = f"jobspy_{raw_id}"
             observe_job(
                 conn,
