@@ -42,6 +42,7 @@ load_dotenv()
 DB_URL = os.environ.get("DATABASE_URL")
 BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+DB_MIGRATION_LOCK_TIMEOUT_MS = 10_000
 
 QUANT_INTERNSHIP_INDEX_URL = (
     "https://raw.githubusercontent.com/northwesternfintech/"
@@ -220,7 +221,6 @@ def get_db_connection():
     return psycopg2.connect(
         DB_URL,
         connect_timeout=10,
-        options="-c statement_timeout=120000 -c lock_timeout=10000",
         application_name="sg-internship-scraper",
     )
 
@@ -229,6 +229,9 @@ def init_db():
     with closing(get_db_connection()) as conn:
         with conn:
             with conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout = '120s'")
+                cur.execute("SELECT set_config('lock_timeout', %s, true)",
+                            (f"{DB_MIGRATION_LOCK_TIMEOUT_MS}ms",))
                 _initialize_database(cur)
     print("Database initialization complete.", flush=True)
 

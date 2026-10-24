@@ -84,7 +84,8 @@ class PostgresTests(unittest.TestCase):
             with self.connection() as blocker:
                 with blocker.cursor() as cur:
                     cur.execute('SELECT pg_advisory_xact_lock(%s)', (734819221,))
-                with patch('main.get_db_connection', return_value=blocked):
+                with patch('main.get_db_connection', return_value=blocked), \
+                        patch('main.DB_MIGRATION_LOCK_TIMEOUT_MS', 200):
                     with self.assertRaises(psycopg2.errors.LockNotAvailable):
                         main.init_db()
                 self.assertTrue(blocked.closed)
