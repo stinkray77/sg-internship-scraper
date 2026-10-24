@@ -4,7 +4,7 @@ import json
 import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from psycopg2.extras import Json
+from psycopg2.extras import Json, execute_values
 
 
 def canonical_url(value):
@@ -96,10 +96,54 @@ def resolve_identity(cur, job):
 
 def backfill_identities(cur):
     cur.execute("SELECT job_id, company, title, site, payload FROM seen_jobs WHERE canonical_id IS NULL AND job_id NOT LIKE 'system_canary_%' ORDER BY created_at, job_id")
-    for job_id, company, title, site, payload in cur.fetchall():
+    rows = cur.fetchall()
+    if not rows:
+        return
+    jobs = []
+    for job_id, company, title, site, payload in rows:
         job = {'company': company, 'title': title, 'site': site, **(payload or {})}
-        canonical_id = resolve_identity(cur, job)
-        cur.execute('UPDATE seen_jobs SET canonical_id = %s WHERE job_id = %s', (canonical_id, job_id))
+        jobs.append((job_id, job, identity_metadata(job)))
+
+    # Use the same employer locks as live resolution, acquired in a stable order.
+    companies = sorted({meta['company'] for _, _, meta in jobs})
+    cur.execute('''SELECT pg_advisory_xact_lock(hashtextextended('jobs:' || company, 0))
+        FROM unnest(%s::text[]) AS companies(company) ORDER BY company''', (companies,))
+    cur.execute('SELECT canonical_id, metadata FROM canonical_jobs')
+    candidates = {}
+    for canonical_id, meta in cur.fetchall():
+        candidates.setdefault((meta['company'], meta['title']), []).append((canonical_id, meta))
+    cur.execute('SELECT alias, canonical_id FROM job_identity_aliases')
+    known_aliases = dict(cur.fetchall())
+    new_identities, new_aliases, updates = [], [], []
+    for job_id, job, meta in jobs:
+        aliases = aliases_for(job)
+        canonical_id = next((known_aliases[a] for a in aliases if a in known_aliases), None)
+        key = (meta['company'], meta['title'])
+        if not canonical_id:
+            matches = [r for r in candidates.get(key, []) if compatible(r[1], meta)]
+            canonical_id = matches[0][0] if len(matches) == 1 else None
+        if not canonical_id:
+            seed = aliases[0] if aliases else json.dumps(meta, sort_keys=True)
+            canonical_id = hashlib.sha256(seed.encode()).hexdigest()
+            if not any(r[0] == canonical_id for r in candidates.get(key, [])):
+                new_identities.append((canonical_id, Json(meta)))
+                candidates.setdefault(key, []).append((canonical_id, meta))
+        for alias in aliases:
+            if alias not in known_aliases:
+                known_aliases[alias] = canonical_id
+                new_aliases.append((alias, canonical_id))
+        updates.append((canonical_id, job_id))
+
+    # Resolve in memory in historical order, then persist in bounded SQL batches.
+    if new_identities:
+        execute_values(cur, '''INSERT INTO canonical_jobs(canonical_id, metadata)
+            VALUES %s ON CONFLICT DO NOTHING''', new_identities, page_size=500)
+    if new_aliases:
+        execute_values(cur, '''INSERT INTO job_identity_aliases(alias, canonical_id)
+            VALUES %s ON CONFLICT DO NOTHING''', new_aliases, page_size=500)
+    execute_values(cur, '''UPDATE seen_jobs AS jobs SET canonical_id = mapping.canonical_id
+        FROM (VALUES %s) AS mapping(canonical_id, job_id)
+        WHERE jobs.job_id = mapping.job_id''', updates, page_size=500)
 
 
 def observation_identity(job):

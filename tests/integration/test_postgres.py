@@ -3,9 +3,10 @@ import os
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import psycopg2
-from psycopg2.extras import Json
+from psycopg2.extras import Json, execute_values
+from identity import backfill_identities, resolve_identity
 import main
 
 DSN = os.getenv('TEST_DATABASE_URL')
@@ -73,6 +74,90 @@ class PostgresTests(unittest.TestCase):
                 status, identity = cur.fetchone()
                 self.assertEqual(status, 'sent')
                 self.assertTrue(identity)
+
+    def test_blocked_startup_times_out_and_closes_connection(self):
+        blocked = self.connection()
+        with blocked.cursor() as cur:
+            cur.execute("SET lock_timeout = '200ms'")
+        blocked.commit()
+        try:
+            with self.connection() as blocker:
+                with blocker.cursor() as cur:
+                    cur.execute('SELECT pg_advisory_xact_lock(%s)', (734819221,))
+                with patch('main.get_db_connection', return_value=blocked):
+                    with self.assertRaises(psycopg2.errors.LockNotAvailable):
+                        main.init_db()
+                self.assertTrue(blocked.closed)
+            # A later run can initialize once the blocking transaction ends.
+            main.init_db()
+        finally:
+            blocked.close()
+
+    def test_failed_startup_rolls_back_schema_changes_and_closes_connection(self):
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute('DROP TABLE scraper_source_runs')
+        failed = self.connection()
+        with patch('main.get_db_connection', return_value=failed), \
+                patch('main.backfill_identities', side_effect=RuntimeError('backfill failed')):
+            with self.assertRaisesRegex(RuntimeError, 'backfill failed'):
+                main.init_db()
+        self.assertTrue(failed.closed)
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('scraper_source_runs')")
+                self.assertIsNone(cur.fetchone()[0])
+        main.init_db()
+
+    def test_batched_backfill_matches_live_identity_resolution(self):
+        jobs = [
+            self.job(),
+            {**self.job(), 'source_id': 'jobspy', 'external_id': 'copy'},
+            self.job('2', 'https://firm.example/job/2'),
+            {**self.job('3', ''), 'location': 'London'},
+            {**self.job('4', ''), 'location': 'London'},
+            {'company': 'Other', 'title': 'Software Intern'},
+            {'company': 'Other', 'title': 'Software Intern'},
+            {**self.job(), 'title': 'Updated Software Intern'},
+        ]
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                expected = [resolve_identity(cur, job) for job in jobs]
+                cur.execute('SELECT alias, canonical_id FROM job_identity_aliases ORDER BY alias')
+                expected_aliases = cur.fetchall()
+                cur.execute('DELETE FROM job_identity_aliases')
+                cur.execute('DELETE FROM canonical_jobs')
+                execute_values(cur, '''INSERT INTO seen_jobs(job_id,company,title,site,payload)
+                    VALUES %s''', [(f'legacy-{i:02}', job['company'], job['title'],
+                                    job.get('source_id'), Json(job)) for i, job in enumerate(jobs)])
+                backfill_identities(cur)
+                cur.execute('SELECT canonical_id FROM seen_jobs ORDER BY job_id')
+                self.assertEqual([row[0] for row in cur.fetchall()], expected)
+                cur.execute('SELECT alias, canonical_id FROM job_identity_aliases ORDER BY alias')
+                self.assertEqual(cur.fetchall(), expected_aliases)
+                # Existing identities and aliases are reused on a later migration.
+                cur.execute("UPDATE seen_jobs SET canonical_id = NULL")
+                backfill_identities(cur)
+                cur.execute('SELECT canonical_id FROM seen_jobs ORDER BY job_id')
+                self.assertEqual([row[0] for row in cur.fetchall()], expected)
+
+    def test_backfill_uses_batches_for_thousands_of_history_rows(self):
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                execute_values(cur, '''INSERT INTO seen_jobs(job_id,company,title,site,payload)
+                    VALUES %s''', [(f'old-{i}', 'Firm', 'Software Intern', 'greenhouse_firm',
+                                    Json(self.job(str(i), f'https://firm.example/job/{i}')))
+                                   for i in range(3100)])
+            with conn.cursor() as cur:
+                counter = MagicMock(wraps=cur)
+                # execute_values needs the real connection encoding for mogrify.
+                counter.connection = conn
+                backfill_identities(counter)
+                # Four setup queries, plus batches for identities, two aliases per
+                # job, and delivery-history updates. No per-job SQL round trips.
+                self.assertLessEqual(counter.execute.call_count, 32)
+                cur.execute('SELECT count(DISTINCT canonical_id) FROM seen_jobs')
+                self.assertEqual(cur.fetchone()[0], 3100)
 
     def test_health_summary_and_run_persistence(self):
         from source_health import record_run, write_summary

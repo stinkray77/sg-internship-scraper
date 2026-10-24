@@ -364,11 +364,13 @@ class LifecycleTests(unittest.TestCase):
 class MigrationTests(unittest.TestCase):
     def test_init_db_creates_lifecycle_tables_and_silent_backfill(self):
         conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value.fetchall.return_value = []
         with patch("main.get_db_connection", return_value=conn):
             main.init_db()
 
         sql = "\n".join(
-            call.args[0] for call in conn.cursor.return_value.execute.call_args_list
+            call.args[0]
+            for call in conn.cursor.return_value.__enter__.return_value.execute.call_args_list
         )
         self.assertIn("CREATE TABLE IF NOT EXISTS job_observations", sql)
         self.assertIn("CREATE TABLE IF NOT EXISTS job_lifecycle_events", sql)
@@ -378,7 +380,8 @@ class MigrationTests(unittest.TestCase):
         self.assertIn("'backfilled'", sql)
         self.assertIn("system_canary_%", sql)
         self.assertIn("lifecycle_event", sql)
-        conn.commit.assert_called_once()
+        conn.__exit__.assert_called_once_with(None, None, None)
+        conn.close.assert_called_once()
 
 
 if __name__ == "__main__":

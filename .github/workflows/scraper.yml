@@ -37,6 +37,7 @@ jobs:
       - run: python -m unittest discover -s tests -q
       - name: Run scraper
         env:
+          PYTHONUNBUFFERED: '1'
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

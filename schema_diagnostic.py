@@ -3,7 +3,8 @@ import os
 import psycopg2
 
 TABLES=('seen_jobs','job_observations','job_lifecycle_events','source_sync_state','canonical_jobs','job_identity_aliases','source_runs','scraper_source_runs','employer_candidates','maintenance_state')
-with psycopg2.connect(os.environ['DATABASE_URL']) as conn:
+with psycopg2.connect(os.environ['DATABASE_URL'], connect_timeout=10,
+                      options='-c statement_timeout=10000 -c lock_timeout=10000') as conn:
     conn.set_session(readonly=True)
     with conn.cursor() as cur:
         for table in TABLES:

@@ -12,6 +12,7 @@ import threading
 import time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import closing
 from dataclasses import dataclass, field
 from functools import lru_cache
 import psycopg2
@@ -216,12 +217,26 @@ def http_get(url: str, **kwargs) -> requests.Response:
     return http_request("GET", url, **kwargs)
 
 def get_db_connection():
-    return psycopg2.connect(DB_URL)
+    return psycopg2.connect(
+        DB_URL,
+        connect_timeout=10,
+        options="-c statement_timeout=120000 -c lock_timeout=10000",
+        application_name="sg-internship-scraper",
+    )
 
 def init_db():
-    conn = get_db_connection()
-    cur = conn.cursor()
+    print("Initializing database: connecting (10s timeout per address)...", flush=True)
+    with closing(get_db_connection()) as conn:
+        with conn:
+            with conn.cursor() as cur:
+                _initialize_database(cur)
+    print("Database initialization complete.", flush=True)
+
+
+def _initialize_database(cur):
+    print("Initializing database: acquiring migration lock (10s timeout)...", flush=True)
     cur.execute("SELECT pg_advisory_xact_lock(%s)", (734819221,))
+    print("Initializing database: migrating schema (120s timeout per statement)...", flush=True)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS seen_jobs (
             job_id TEXT PRIMARY KEY,
@@ -351,10 +366,8 @@ def init_db():
     """)
     migrate_identity_schema(cur)
     migrate_health_schema(cur)
+    print("Initializing database: backfilling job identities...", flush=True)
     backfill_identities(cur)
-    conn.commit()
-    cur.close()
-    conn.close()
 
 def _message_value(value: object, limit: int = 300) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
