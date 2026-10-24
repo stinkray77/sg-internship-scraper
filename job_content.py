@@ -1,5 +1,6 @@
 """Grounded description excerpts and role-scoped overseas support evidence."""
 import datetime as dt
+import html
 import json
 import re
 from pathlib import Path
@@ -15,7 +16,14 @@ CONDITIONAL = re.compile(r'\b(?:may|might|case.by.case|subject to|where eligible
 
 
 def text_blocks(value):
-    soup = BeautifulSoup(str(value or ''), 'html.parser')
+    markup = str(value or '')
+    # Some ATS responses encode the entire HTML document, including Word's
+    # lengthy list attributes. Decode markup before extracting or truncating text.
+    for _ in range(2):
+        if not re.search(r'&(?:amp;)*lt;/?(?:p|li|div|span|ul|ol|section|br|h[1-6]|strong|em)\b', markup, re.I):
+            break
+        markup = html.unescape(markup)
+    soup = BeautifulSoup(markup, 'html.parser')
     for tag in soup(['script', 'style', 'nav', 'footer']):
         tag.decompose()
     for tag in soup.find_all(['p', 'li', 'div', 'section', 'br', 'h1', 'h2', 'h3']):

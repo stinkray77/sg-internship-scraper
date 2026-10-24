@@ -1,6 +1,9 @@
 import datetime as dt
+import html
+import json
 import unittest
-from job_content import ambiguous_technical_student, extract_content, overseas_eligible, support_evidence
+from pathlib import Path
+from job_content import ambiguous_technical_student, extract_content, overseas_eligible, support_evidence, text_blocks
 
 
 class ContentTests(unittest.TestCase):
@@ -49,3 +52,29 @@ class ContentTests(unittest.TestCase):
     def test_inline_html_does_not_split_sponsorship_evidence(self):
         job=dict(location='Sydney',description='<p>Visa <b>sponsorship</b> is available.</p>')
         self.assertTrue(overseas_eligible(job,False,False))
+
+    def test_encoded_list_attributes_do_not_leak_into_role_summary(self):
+        task = 'Develop software applications using Python and SQL.'
+        markup = ('<ul><li data-list-defn-props="' + '&quot;335552541&quot;:1,' * 30
+                  + '"><span>' + task + '</span></li></ul>')
+        for description in (markup, html.escape(markup), html.escape(html.escape(markup))):
+            with self.subTest(description=description[:60]):
+                content = extract_content(description)
+                self.assertEqual(content['responsibilities'], [task])
+                self.assertEqual(content['skills'], ['Python', 'SQL'])
+                self.assertNotIn('data-list', content['description'])
+                self.assertNotIn('<li', content['description'])
+
+    def test_encoded_sponsorship_and_literal_code_are_preserved(self):
+        self.assertEqual(text_blocks('<p>Use vector&lt;T&gt; and R&amp;D.</p>'),
+                         ['Use vector<T> and R&D.'])
+        job = dict(location='Sydney', description=html.escape('<p>Visa sponsorship is available.</p>'))
+        self.assertTrue(overseas_eligible(job, False, False))
+
+    def test_schonfeld_fixture_has_no_markup_in_description_text(self):
+        fixture = Path(__file__).parent / 'fixtures' / 'coverage' / 'schonfeld.json'
+        for job in json.loads(fixture.read_text())['response']['jobs']:
+            with self.subTest(title=job['title']):
+                text = '\n'.join(text_blocks(job['content']))
+                self.assertNotIn('<li', text)
+                self.assertNotIn('data-list-defn-props', text)
