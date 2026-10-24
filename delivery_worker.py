@@ -1,9 +1,6 @@
 """Poll committed deliveries while scrapers continue on their own connections."""
 import threading
 
-DELIVERY_LOCK = 734819220
-
-
 class DeliveryWorker:
     def __init__(self, deliver, interval=5):
         self.deliver=deliver

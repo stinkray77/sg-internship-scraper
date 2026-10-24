@@ -12,7 +12,7 @@ import threading
 import time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import closing
+from contextlib import closing, ExitStack
 from dataclasses import dataclass, field
 from functools import lru_cache
 import psycopg2
@@ -27,7 +27,8 @@ from bs4 import BeautifulSoup
 from source_adapters import fetch_source, load_source_registry
 from eligibility import EligibilityAssessment, assess_eligibility
 from role_patterns import STUDENT_ROLE_PATTERN, normalize_role_title
-from delivery_worker import DeliveryWorker, DELIVERY_LOCK
+from delivery_worker import DeliveryWorker
+from coordination import advisory_lock, validate_direct_url, CoordinationError, DELIVERY_LOCK, PIPELINE_LOCK_PREFIX
 from http_limits import source_deadline, request_slot, BoundedRetry
 from source_health import migrate_health_schema, record_run, record_candidate, write_summary
 from maintenance import load_indexes, run_maintenance, policy_cache
@@ -40,6 +41,7 @@ load_dotenv()
 
 # --- CONFIGURATION ---
 DB_URL = os.environ.get("DATABASE_URL")
+UNPOOLED_DB_URL = os.environ.get("DATABASE_URL_UNPOOLED")
 BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 DB_MIGRATION_LOCK_TIMEOUT_MS = 10_000
@@ -1290,19 +1292,20 @@ def deliver_pending_jobs(only_job_id: str | None = None) -> int:
     """Deliver all currently due jobs and return the number of failures."""
     if DRY_RUN:
         return 0
+    if only_job_id is not None:
+        return _deliver_due_jobs(only_job_id)
+    with advisory_lock(UNPOOLED_DB_URL, DELIVERY_LOCK) as acquired:
+        if not acquired:
+            print("Delivery already running in another workflow; skipping this pass.")
+            return 0
+        return _deliver_due_jobs()
 
+
+def _deliver_due_jobs(only_job_id: str | None = None) -> int:
     failures = 0
     conn = get_db_connection()
-    locked = False
     started = time.monotonic()
     try:
-        if only_job_id is None:
-            with conn.cursor() as lock_cursor:
-                lock_cursor.execute("SELECT pg_try_advisory_lock(%s)", (DELIVERY_LOCK,))
-                locked = bool(lock_cursor.fetchone()[0])
-            conn.commit()
-            if not locked:
-                return 0
         if only_job_id is None:
             while time.monotonic()-started < 45:
                 digest_rows = claim_due_digest(conn)
@@ -2318,6 +2321,12 @@ def main(argv=None) -> int:
         if missing:
             print(f"❌ Missing required configuration: {', '.join(missing)}")
             return 1
+        if not args.canary and args.group != "maintenance":
+            try:
+                validate_direct_url(UNPOOLED_DB_URL)
+            except CoordinationError as error:
+                print(f"❌ Coordination configuration failed: {error}")
+                return 1
         try:
             init_db()
         except Exception as e:
@@ -2340,38 +2349,32 @@ def main(argv=None) -> int:
     try:
         for pipeline in pipelines:
             started = time.monotonic()
-            lease = None
             try:
-                if not DRY_RUN:
-                    lease = get_db_connection()
-                    with lease.cursor() as cur:
-                        cur.execute("SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", ("pipeline:" + pipeline.__name__,))
-                        acquired = cur.fetchone()[0]
-                    lease.commit()
-                    if not acquired:
-                        stats_list.append(PipelineStats(pipeline.__name__, warnings=["Already running in another workflow"], complete=False))
-                        continue
-                if pipeline is scrape_internsg_pipeline:
-                    with source_deadline(180):
+                with ExitStack() as locks:
+                    if not DRY_RUN:
+                        acquired = locks.enter_context(advisory_lock(
+                            UNPOOLED_DB_URL, PIPELINE_LOCK_PREFIX + pipeline.__name__))
+                        if not acquired:
+                            stats_list.append(PipelineStats(pipeline.__name__, warnings=["Already running in another workflow"], complete=False))
+                            continue
+                    if pipeline is scrape_internsg_pipeline:
+                        with source_deadline(180):
+                            pipeline_stats = pipeline()
+                    else:
                         pipeline_stats = pipeline()
-                else:
-                    pipeline_stats = pipeline()
-                items = pipeline_stats if isinstance(pipeline_stats, list) else [pipeline_stats]
-                if not isinstance(pipeline_stats, list):
-                    pipeline_stats.duration_seconds = time.monotonic()-started
-                stats_list.extend(items)
-                if not DRY_RUN and pipeline is not scrape_registry_pipelines:
-                    conn = get_db_connection()
-                    try:
-                        for stats in items:
-                            record_run(conn, stats)
-                    finally:
-                        conn.close()
+                    items = pipeline_stats if isinstance(pipeline_stats, list) else [pipeline_stats]
+                    if not isinstance(pipeline_stats, list):
+                        pipeline_stats.duration_seconds = time.monotonic()-started
+                    stats_list.extend(items)
+                    if not DRY_RUN and pipeline is not scrape_registry_pipelines:
+                        conn = get_db_connection()
+                        try:
+                            for stats in items:
+                                record_run(conn, stats)
+                        finally:
+                            conn.close()
             except Exception as error:
                 stats_list.append(PipelineStats(pipeline.__name__, errors=[str(error)], complete=False))
-            finally:
-                if lease:
-                    lease.close()
         if args.group in ("maintenance", "all"):
             conn = None if DRY_RUN else get_db_connection()
             try:

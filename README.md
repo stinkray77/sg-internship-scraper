@@ -59,6 +59,9 @@ or Hong Kong benefit is inferred simply from the employer name.
 Official boards are processed as they finish. A separate worker checks committed
 queue entries every five seconds while scraping continues. Database locks
 serialize delivery across workflows and preserve atomic claims and retries.
+Session locks use dedicated unpooled connections and are explicitly released on
+the same session. Normal reads, writes and transaction-level locks stay pooled.
+Lock contention skips duplicate work; coordination failures make the run fail.
 
 Official sources are scheduled every ten minutes, discovery sources every thirty
 minutes, and maintenance daily. GitHub Actions scheduling and source response
@@ -90,9 +93,20 @@ Required live environment variables:
 
 ```env
 DATABASE_URL=postgresql://user:password@host:5432/database
+DATABASE_URL_UNPOOLED=postgresql://user:password@direct-host:5432/database
 TELEGRAM_TOKEN=your_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
 ```
+
+`DATABASE_URL_UNPOOLED` is required for live `official`, `discovery`, and `all`
+runs. Use the direct URL for the same Neon branch, database and role, without
+`-pooler` in the hostname; set the same name as a GitHub Actions secret. It is
+not required for dry runs, maintenance, schema diagnostics or isolated canaries.
+There is no fallback to the pooled endpoint for session locks.
+Manual workflow mode `coordination` checks direct connectivity, contention and
+release using isolated advisory keys. It changes no application data and sends
+no Telegram messages; locally, run `python coordination.py --check` with
+`DATABASE_URL_UNPOOLED` exported.
 
 Optional settings: `JOB_LOOKBACK_HOURS=72`, `RESULTS_PER_SOURCE=50`,
 `DELIVERY_TIMEZONE=Asia/Singapore`, `QUIET_HOURS_START=0`, `QUIET_HOURS_END=8`,

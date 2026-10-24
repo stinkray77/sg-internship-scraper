@@ -17,6 +17,12 @@ def response_with_json(value, status_code=200):
 
 
 class DeliveryTests(unittest.TestCase):
+    def setUp(self):
+        lock_patch = patch('main.advisory_lock')
+        self.lock = lock_patch.start()
+        self.lock.return_value.__enter__.return_value = True
+        self.addCleanup(lock_patch.stop)
+
     def test_quiet_hour_boundaries_use_singapore_time(self):
         singapore = main.DELIVERY_TIMEZONE
         before_end = datetime.datetime(2026, 7, 20, 7, 59, tzinfo=singapore)

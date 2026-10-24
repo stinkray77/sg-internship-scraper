@@ -7,9 +7,58 @@ from unittest.mock import MagicMock, patch
 import psycopg2
 from psycopg2.extras import Json, execute_values
 from identity import backfill_identities, resolve_identity
+from coordination import advisory_lock, check_coordination, CoordinationError
 import main
 
 DSN = os.getenv('TEST_DATABASE_URL')
+
+
+@unittest.skipUnless(DSN, 'TEST_DATABASE_URL is required for PostgreSQL integration tests')
+class DirectCoordinationTests(unittest.TestCase):
+    def test_production_check_uses_isolated_keys_and_can_be_repeated(self):
+        check_coordination(DSN)
+        check_coordination(DSN)
+
+    def test_lock_survives_data_commits_and_unrelated_pipelines_can_run(self):
+        key = 'scraper:test:coordination:commit'
+        with advisory_lock(DSN, key) as first:
+            self.assertTrue(first)
+            with psycopg2.connect(DSN) as data:
+                with data.cursor() as cur:
+                    cur.execute('SELECT 1')
+                data.commit()
+                with advisory_lock(DSN, key) as second:
+                    self.assertFalse(second)
+                with advisory_lock(DSN, key + ':other-pipeline') as independent:
+                    self.assertTrue(independent)
+        with advisory_lock(DSN, key) as next_worker:
+            self.assertTrue(next_worker)
+
+    def test_work_exception_releases_lock_for_the_next_worker(self):
+        key = 'scraper:test:coordination:exception'
+        with self.assertRaisesRegex(ValueError, 'processing failed'):
+            with advisory_lock(DSN, key) as acquired:
+                self.assertTrue(acquired)
+                raise ValueError('processing failed')
+        with advisory_lock(DSN, key) as next_worker:
+            self.assertTrue(next_worker)
+
+    def test_connection_loss_releases_lock_without_silent_reconnection(self):
+        key = 'scraper:test:coordination:disconnect'
+        connect = psycopg2.connect
+        connections = []
+        def capture(*args, **kwargs):
+            conn = connect(*args, **kwargs)
+            connections.append(conn)
+            return conn
+        with patch('coordination.psycopg2.connect', side_effect=capture) as factory:
+            with self.assertRaises(CoordinationError):
+                with advisory_lock(DSN, key) as acquired:
+                    self.assertTrue(acquired)
+                    connections[0].close()
+            self.assertEqual(factory.call_count, 1)
+        with advisory_lock(DSN, key) as next_worker:
+            self.assertTrue(next_worker)
 
 
 @unittest.skipUnless(DSN, 'TEST_DATABASE_URL is required for PostgreSQL integration tests')
